@@ -3,11 +3,28 @@
 const { spawn } = require('child_process');
 const axios = require('axios');
 
-const SERVER_URL = 'http://localhost:5000';
+// Configuration
+const ENVIRONMENTS = {
+  local: 'http://localhost:5000',
+  production: 'https://api-hetasinglar.onrender.com'
+};
+
+// Get environment from command line argument or default to local
+const environment = process.argv[2] || 'local';
+const SERVER_URL = ENVIRONMENTS[environment];
+
+if (!SERVER_URL) {
+  console.log('❌ Invalid environment. Use: local or production');
+  console.log('Example: npm run start-with-alerts production');
+  process.exit(1);
+}
+
 const MAX_STARTUP_TIME = 30000; // 30 seconds
 
 console.log('\n🚀 HETASINGLAR BACKEND STARTUP ASSISTANT');
 console.log('═'.repeat(60));
+console.log(`🌐 Environment: ${environment.toUpperCase()}`);
+console.log(`🔍 Target URL: ${SERVER_URL}`);
 console.log(`⏰ Started at: ${new Date().toISOString()}`);
 console.log('═'.repeat(60));
 
@@ -44,25 +61,26 @@ async function waitForServer() {
 
 async function main() {
   // Check if server is already running
-  console.log('🔍 Checking if server is already running...');
+  console.log(`🔍 Checking if ${environment} server is already running...`);
   
   if (await checkIfServerRunning()) {
-    console.log('✅ Server is already running!');
+    console.log(`✅ ${environment.toUpperCase()} server is already running!`);
     console.log('━'.repeat(40));
     
     try {
       const response = await axios.get(`${SERVER_URL}/api/health`);
       const data = response.data;
       
-      console.log('🟢 CURRENT SERVER STATUS:');
+      console.log(`🟢 CURRENT ${environment.toUpperCase()} SERVER STATUS:`);
       console.log(`📍 URL: ${SERVER_URL}`);
       console.log(`📊 Status: ${data.status}`);
       console.log(`⏱️  Uptime: ${Math.floor(data.uptime / 3600)}h ${Math.floor((data.uptime % 3600) / 60)}m`);
       console.log(`🗄️  Database: ${data.services.database}`);
       console.log(`🔗 WebSocket clients: ${data.services.websocket}`);
       console.log(`🏷️  Version: ${data.version}`);
+      console.log(`🌐 Environment: ${data.environment}`);
       console.log('━'.repeat(40));
-      console.log('💡 Use "npm run monitor" to continuously monitor server health');
+      console.log(`💡 Use "npm run monitor ${environment}" to continuously monitor server health`);
       
     } catch (error) {
       console.log('⚠️  Server is running but health check failed');
@@ -72,7 +90,25 @@ async function main() {
     return;
   }
   
-  // Start the server
+  // For production, we can't start the server locally, just show status
+  if (environment === 'production') {
+    console.log('🔴 PRODUCTION SERVER NOT RESPONDING');
+    console.log('━'.repeat(40));
+    console.log('⚠️  Production server is not accessible');
+    console.log(`🔍 URL: ${SERVER_URL}`);
+    console.log('💡 Check your Render deployment at: https://dashboard.render.com');
+    console.log('💡 Possible issues:');
+    console.log('   • Deployment failed or crashed');
+    console.log('   • Environment variables not set');
+    console.log('   • Database connection issues');
+    console.log('   • Service sleeping (free tier)');
+    console.log('━'.repeat(40));
+    console.log(`💡 Monitor production status: npm run monitor production`);
+    console.log('');
+    return;
+  }
+  
+  // Start the server (only for local environment)
   console.log('🚀 Starting HetaSinglar Backend Server...');
   console.log('━'.repeat(40));
   

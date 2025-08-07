@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const WebSocket = require('ws');
 const http = require('http');
+const corsConfig = require('./config/corsConfig');
 const { router: authRoutes } = require('./auth');
 const adminRoutes = require('./routes/adminRoutes');
 const agentRoutes = require('./routes/agentRoutes');
@@ -23,18 +24,19 @@ const Subscription = require('./models/Subscription');
 
 const app = express();
 const server = http.createServer(app);
+
+// CORS Configuration
+console.log('🌐 CORS Configuration:');
+console.log('📍 Environment:', process.env.NODE_ENV || 'development');
+console.log('� Allowed Origins:', corsConfig.getAllowedOrigins());
+
 const wss = new WebSocket.Server({ 
   server,
-  verifyClient: (info) => {
-    const origin = info.origin || info.req.headers.origin;
-    return origin === 'http://localhost:8000';
-  }
+  verifyClient: (info) => corsConfig.verifyWebSocketClient(info)
 });
 
-app.use(cors({
-  origin: 'http://localhost:8000', // Allow frontend URL
-  credentials: true
-}));
+// Apply CORS middleware
+app.use(cors(corsConfig.getCorsOptions()));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
 app.use('/api/auth', authRoutes);
@@ -66,6 +68,27 @@ app.get('/api/health', (req, res) => {
   
   console.log('🟢 API Health Check:', healthStatus.timestamp);
   res.json(healthStatus);
+});
+
+// CORS Test endpoint
+app.get('/api/cors-test', (req, res) => {
+  const corsTestResult = {
+    message: 'CORS is working correctly',
+    origin: req.headers.origin || 'No origin header',
+    userAgent: req.headers['user-agent'] || 'No user agent',
+    timestamp: new Date().toISOString(),
+    allowedOrigins: corsConfig.getAllowedOrigins(),
+    requestHeaders: req.headers
+  };
+  
+  console.log('🌐 CORS Test Request from:', req.headers.origin);
+  res.json(corsTestResult);
+});
+
+// OPTIONS preflight handler for all routes
+app.options('*', (req, res) => {
+  console.log('✈️  CORS Preflight Request from:', req.headers.origin);
+  res.sendStatus(200);
 });
 
 // Server status endpoint

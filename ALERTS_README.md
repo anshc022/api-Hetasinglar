@@ -2,47 +2,53 @@
 
 ## 🚀 Server Startup with Alerts
 
-The backend now includes comprehensive health monitoring and alert system that will show you when the server is running and provide API health status.
+The backend now includes comprehensive health monitoring and alert system that will show you when the server is running and provide API health status for both **local development** and **production** environments.
+
+### 🌐 Your Production API: `https://api-hetasinglar.onrender.com/`
 
 ## 📋 Available Commands
 
-### Start Server with Alerts
+### Production Monitoring Commands
 ```powershell
+# Quick production status check
+npm run check-production
+
+# Continuous production monitoring
+npm run monitor-production
+
+# Production startup check (shows status only)
+npm run start-production-check
+
+# Test all API endpoints (basic scan)
+npm run test-endpoints
+
+# Full endpoint testing with authentication
+npm run test-endpoints-full
+```
+
+### Local Development Commands
+```powershell
+# Start local server with alerts
 npm run start-with-alerts
-```
-This command will:
-- Check if server is already running
-- Start the server with enhanced logging
-- Show detailed startup progress
-- Display health status once ready
-- Provide helpful command suggestions
 
-### Monitor Server Health
-```powershell
+# Monitor local server health
 npm run monitor
-```
-This command will:
-- Continuously monitor server health every 10 seconds
-- Show real-time status updates
-- Display response times, uptime, memory usage
-- Alert you if server goes offline
-- Press Ctrl+C to stop monitoring
 
-### Regular Server Start
-```powershell
+# Regular local server start
 npm start
-```
-Standard server startup with enhanced console alerts
 
-### Development Mode
-```powershell
+# Development mode with auto-restart
 npm run dev
 ```
-Start server with auto-restart on file changes
 
 ## 🏥 Health Check Endpoints
 
-### API Health Check
+### Production API Health Check
+```
+GET https://api-hetasinglar.onrender.com/api/health
+```
+
+### Local API Health Check
 ```
 GET http://localhost:5000/api/health
 ```
@@ -53,7 +59,12 @@ Returns detailed server health information including:
 - WebSocket client count
 - Service status
 
-### Server Status
+### Production API Status
+```
+GET https://api-hetasinglar.onrender.com/api/status
+```
+
+### Local API Status
 ```
 GET http://localhost:5000/api/status
 ```
@@ -127,17 +138,45 @@ The health monitor will show:
 
 ## 💡 Usage Tips
 
+### For Production Monitoring:
+1. **Quick Status Check**: Use `npm run check-production` to get instant production API status
+2. **Continuous Monitoring**: Use `npm run monitor-production` to watch production health in real-time
+3. **Direct Browser Check**: Visit `https://api-hetasinglar.onrender.com/api/health` in your browser
+
+### For Local Development:
 1. **Daily Development**: Use `npm run start-with-alerts` to get clear feedback about server status
 2. **Continuous Monitoring**: Use `npm run monitor` in a separate terminal to watch server health
 3. **Production**: The regular `npm start` now includes enhanced logging for better visibility
 4. **Debugging**: Check the health endpoint directly in your browser: `http://localhost:5000/api/health`
 
+### Production Specific Tips:
+- **Free Tier Services**: Render free tier services sleep after 15 minutes of inactivity
+- **Cold Starts**: First request after sleep may take 30+ seconds to respond
+- **Monitoring**: Use continuous monitoring to keep your service awake
+- **Troubleshooting**: Check Render dashboard at https://dashboard.render.com for deployment issues
+
 ## 🛠️ Troubleshooting
 
-If you see alerts about the server being offline:
+### Local Development Issues:
+If you see alerts about the local server being offline:
 1. Make sure you're in the correct directory: `f:\vercal\Hetasinglar\backend\api-Hetasinglar`
 2. Install dependencies: `npm install`
 3. Check if MongoDB is accessible
 4. Verify port 5000 is not in use by another application
+
+### Production Issues:
+If production API shows as offline:
+1. **Service Sleeping**: Free tier services sleep after 15 minutes
+   - Use `npm run monitor-production` to wake it up
+   - Consider upgrading to paid tier for always-on service
+2. **Deployment Failed**: Check Render dashboard for build/deploy errors
+3. **Environment Variables**: Verify all required environment variables are set
+4. **Database Issues**: Check MongoDB Atlas connection and IP whitelist
+5. **DNS/Network**: Try accessing the URL directly in a browser
+
+### Common Production Error Messages:
+- **🔴 OFFLINE**: Service is sleeping or crashed - check Render dashboard
+- **🟡 TIMEOUT**: Service is starting up - wait 30-60 seconds and try again  
+- **🟠 HTTP ERROR**: Check specific HTTP status code for details
 
 The alert system will help you quickly identify and resolve any backend issues!

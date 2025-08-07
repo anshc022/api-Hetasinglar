@@ -2,13 +2,29 @@
 
 const axios = require('axios');
 
-const SERVER_URL = 'http://localhost:5000';
+// Configuration - you can change this to monitor different environments
+const ENVIRONMENTS = {
+  local: 'http://localhost:5000',
+  production: 'https://api-hetasinglar.onrender.com'
+};
+
+// Get environment from command line argument or default to local
+const environment = process.argv[2] || 'local';
+const SERVER_URL = ENVIRONMENTS[environment];
+
+if (!SERVER_URL) {
+  console.log('❌ Invalid environment. Use: local or production');
+  console.log('Example: npm run monitor production');
+  process.exit(1);
+}
+
 const CHECK_INTERVAL = 10000; // 10 seconds
 
 let isMonitoring = true;
 
 console.log('\n🏥 HETASINGLAR API HEALTH MONITOR');
 console.log('═'.repeat(50));
+console.log(`🌐 Environment: ${environment.toUpperCase()}`);
 console.log(`🔍 Monitoring: ${SERVER_URL}`);
 console.log(`⏱️  Check interval: ${CHECK_INTERVAL / 1000} seconds`);
 console.log(`⏰ Started at: ${new Date().toISOString()}`);
@@ -26,7 +42,7 @@ async function checkServerHealth() {
     const timestamp = new Date().toISOString();
     const data = response.data;
     
-    console.log('🟢 SERVER STATUS: HEALTHY');
+    console.log(`🟢 ${environment.toUpperCase()} API STATUS: HEALTHY`);
     console.log('━'.repeat(40));
     console.log(`⏰ Check time: ${timestamp}`);
     console.log(`⚡ Response time: ${responseTime}ms`);
@@ -36,28 +52,33 @@ async function checkServerHealth() {
     console.log(`🔗 WebSocket clients: ${data.services.websocket}`);
     console.log(`💾 Memory: ${Math.round(data.memory.heapUsed / 1024 / 1024)}MB`);
     console.log(`🏷️  Version: ${data.version}`);
+    console.log(`🌐 Environment: ${data.environment}`);
     console.log('━'.repeat(40));
     
   } catch (error) {
     const timestamp = new Date().toISOString();
     
     if (error.code === 'ECONNREFUSED') {
-      console.log('🔴 SERVER STATUS: OFFLINE');
+      console.log(`🔴 ${environment.toUpperCase()} API STATUS: OFFLINE`);
       console.log('━'.repeat(40));
       console.log(`⏰ Check time: ${timestamp}`);
       console.log(`❌ Error: Server is not running`);
       console.log(`🔍 URL: ${SERVER_URL}`);
-      console.log('💡 Start the server with: npm start or node server.js');
+      if (environment === 'local') {
+        console.log('💡 Start the server with: npm start or node server.js');
+      } else {
+        console.log('💡 Check your production deployment status');
+      }
       console.log('━'.repeat(40));
     } else if (error.code === 'ETIMEDOUT') {
-      console.log('🟡 SERVER STATUS: TIMEOUT');
+      console.log(`🟡 ${environment.toUpperCase()} API STATUS: TIMEOUT`);
       console.log('━'.repeat(40));
       console.log(`⏰ Check time: ${timestamp}`);
       console.log(`⏱️  Error: Server response timeout (>5s)`);
       console.log(`🔍 URL: ${SERVER_URL}`);
       console.log('━'.repeat(40));
     } else {
-      console.log('🟠 SERVER STATUS: ERROR');
+      console.log(`🟠 ${environment.toUpperCase()} API STATUS: ERROR`);
       console.log('━'.repeat(40));
       console.log(`⏰ Check time: ${timestamp}`);
       console.log(`❌ Error: ${error.message}`);
