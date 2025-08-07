@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "start-with-alerts": "node start-with-alerts.js",
     "dev": "nodemon server.js",
+    "monitor": "node health-monitor.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {

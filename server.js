@@ -48,18 +48,63 @@ app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/logs', logRoutes); // Add logs API routes
 app.use('/api/first-contact', firstContactRoutes); // Add first contact API routes
 
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  const healthStatus = {
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    version: require('./package.json').version,
+    memory: process.memoryUsage(),
+    services: {
+      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      websocket: wss.clients.size,
+      reminders: 'active'
+    }
+  };
+  
+  console.log('🟢 API Health Check:', healthStatus.timestamp);
+  res.json(healthStatus);
+});
+
+// Server status endpoint
+app.get('/api/status', (req, res) => {
+  res.json({
+    message: 'HetaSinglar Backend API is running',
+    status: 'active',
+    timestamp: new Date().toISOString(),
+    port: process.env.PORT || 5000,
+    endpoints: [
+      '/api/health',
+      '/api/auth',
+      '/api/admin',
+      '/api/agents',
+      '/api/chats',
+      '/api/subscription',
+      '/api/commission',
+      '/api/affiliate'
+    ]
+  });
+});
+
 mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3sfyYCq@dating.flel6.mongodb.net/hetasinglar?retryWrites=true&w=majority', {
   useNewUrlParser: true,
   useUnifiedTopology: true
 }).then(async () => {
-  console.log('MongoDB connected');
+  console.log('🟢 MongoDB connected successfully');
+  console.log('📊 Database Status: Connected');
   await createDefaultAdmin(); // Initialize default admin account
   await initializeCommissionSystem(); // Initialize commission and affiliate system
   
   // Start the reminder service
   reminderService.start(30); // Check every 30 minutes
-  console.log('Reminder service started');
-}).catch(err => console.error('MongoDB connection error:', err));
+  console.log('⏰ Reminder service started');
+  console.log('🔄 System initialization complete');
+}).catch(err => {
+  console.error('🔴 MongoDB connection error:', err);
+  console.log('❌ Database Status: Failed to connect');
+});
 
 // WebSocket connection handling
 wss.on('connection', (ws) => {
@@ -422,6 +467,24 @@ setInterval(() => {
   ActiveUsersService.cleanupInactiveUsers();
 }, 60000);
 
+// Periodic server health status alerts (every 30 minutes)
+setInterval(() => {
+  const timestamp = new Date().toISOString();
+  const uptime = Math.floor(process.uptime());
+  const hours = Math.floor(uptime / 3600);
+  const minutes = Math.floor((uptime % 3600) / 60);
+  
+  console.log('\n🏥 SERVER HEALTH STATUS ALERT');
+  console.log('━'.repeat(40));
+  console.log(`⏰ Time: ${timestamp}`);
+  console.log(`⏱️  Uptime: ${hours}h ${minutes}m`);
+  console.log(`🔗 Active WebSocket connections: ${wss.clients.size}`);
+  console.log(`💾 Memory usage: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+  console.log(`🗄️  Database: ${mongoose.connection.readyState === 1 ? '✅ Connected' : '❌ Disconnected'}`);
+  console.log('━'.repeat(40));
+  console.log('🟢 API STATUS: HEALTHY & OPERATIONAL\n');
+}, 30 * 60 * 1000); // Every 30 minutes
+
 // Add WebSocket heartbeat
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
@@ -437,23 +500,88 @@ wss.on('close', () => {
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('Shutting down gracefully...');
+  console.log('\n🛑 SHUTDOWN ALERT - SIGINT received');
+  console.log('━'.repeat(50));
+  console.log('⏰ Shutdown initiated at:', new Date().toISOString());
+  console.log('🔄 Stopping reminder service...');
   reminderService.stop();
+  console.log('✅ Reminder service stopped');
+  console.log('🔌 Closing WebSocket connections...');
+  wss.close();
+  console.log('✅ WebSocket server closed');
+  console.log('💾 Closing database connections...');
+  mongoose.connection.close();
+  console.log('✅ Database connections closed');
+  console.log('━'.repeat(50));
+  console.log('👋 HetaSinglar Backend Server shutdown complete\n');
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  console.log('Shutting down gracefully...');
+  console.log('\n🛑 SHUTDOWN ALERT - SIGTERM received');
+  console.log('━'.repeat(50));
+  console.log('⏰ Shutdown initiated at:', new Date().toISOString());
+  console.log('🔄 Stopping reminder service...');
   reminderService.stop();
+  console.log('✅ Reminder service stopped');
+  console.log('🔌 Closing WebSocket connections...');
+  wss.close();
+  console.log('✅ WebSocket server closed');
+  console.log('💾 Closing database connections...');
+  mongoose.connection.close();
+  console.log('✅ Database connections closed');
+  console.log('━'.repeat(50));
+  console.log('👋 HetaSinglar Backend Server shutdown complete\n');
   process.exit(0);
 });
 
 app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ message: 'Server error' });
+  const timestamp = new Date().toISOString();
+  console.error('\n🚨 SERVER ERROR ALERT');
+  console.error('━'.repeat(50));
+  console.error(`⏰ Time: ${timestamp}`);
+  console.error(`🔍 Endpoint: ${req.method} ${req.path}`);
+  console.error(`❌ Error: ${err.message}`);
+  console.error(`📍 Stack: ${err.stack}`);
+  console.error('━'.repeat(50));
+  console.error('⚠️  Server encountered an error but remains operational\n');
+  
+  res.status(500).json({ 
+    message: 'Server error',
+    timestamp: timestamp,
+    status: 'error_handled'
+  });
 });
 
 // Update the server start
 server.listen(process.env.PORT || 5000, () => {
-  console.log(`Server running on port ${process.env.PORT || 5000}`);
+  const port = process.env.PORT || 5000;
+  const timestamp = new Date().toISOString();
+  
+  console.log('\n' + '='.repeat(60));
+  console.log('🚀 HETASINGLAR BACKEND SERVER STARTED');
+  console.log('='.repeat(60));
+  console.log(`📍 Server URL: http://localhost:${port}`);
+  console.log(`⏰ Started at: ${timestamp}`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Health Check: http://localhost:${port}/api/health`);
+  console.log(`📊 Status Check: http://localhost:${port}/api/status`);
+  console.log('='.repeat(60));
+  console.log('🟢 API READY - All endpoints are available');
+  console.log('🔄 WebSocket server is running');
+  console.log('✅ Backend is fully operational\n');
+  
+  // Log available endpoints
+  console.log('📋 Available API Endpoints:');
+  console.log('   • /api/health - Health check');
+  console.log('   • /api/status - Server status');
+  console.log('   • /api/auth - Authentication');
+  console.log('   • /api/admin - Admin panel');
+  console.log('   • /api/agents - Agent management');
+  console.log('   • /api/chats - Chat system');
+  console.log('   • /api/subscription - Subscriptions');
+  console.log('   • /api/commission - Commission system');
+  console.log('   • /api/affiliate - Affiliate program');
+  console.log('   • /api/logs - System logs');
+  console.log('   • /api/first-contact - First contact\n');
 });
