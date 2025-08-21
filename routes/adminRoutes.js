@@ -841,15 +841,17 @@ router.get('/escorts', adminAuth, async (req, res) => {
     // Search filter
     if (search) {
       query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { location: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
+        { username: { $regex: search, $options: 'i' } },
+        { firstName: { $regex: search, $options: 'i' } },
+        { country: { $regex: search, $options: 'i' } },
+        { region: { $regex: search, $options: 'i' } },
+        { profession: { $regex: search, $options: 'i' } }
       ];
     }
     
     // Status filter
     if (status !== '') {
-      query.availability = status === 'available';
+      query.status = status;
     }
     
     // Featured filter
@@ -1144,14 +1146,15 @@ router.get('/all-escort-profiles', adminAuth, async (req, res) => {
     // Fetch admin-created escorts
     const escortQuery = {};
     if (status) {
-      if (status === 'active') escortQuery.availability = true;
-      else if (status === 'inactive') escortQuery.availability = false;
+      escortQuery.status = status;
     }
     if (search) {
       escortQuery.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { location: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
+        { username: { $regex: search, $options: 'i' } },
+        { firstName: { $regex: search, $options: 'i' } },
+        { country: { $regex: search, $options: 'i' } },
+        { region: { $regex: search, $options: 'i' } },
+        { profession: { $regex: search, $options: 'i' } }
       ];
     }
     
@@ -1174,18 +1177,31 @@ router.get('/all-escort-profiles', adminAuth, async (req, res) => {
       // Combine and normalize the data
     const escortData = escorts.map(escort => ({
       id: escort._id,
-      name: escort.name,
-      age: escort.age,
-      location: escort.location,
-      description: escort.description,
-      images: escort.images,
-      status: escort.availability ? 'active' : 'inactive',
-      featured: escort.featured,      createdBy: escort.createdBy ? {
+      name: escort.firstName || escort.username,
+      age: escort.dateOfBirth ? Math.floor((Date.now() - escort.dateOfBirth) / (365.25 * 24 * 60 * 60 * 1000)) : null,
+      location: `${escort.region || ''}, ${escort.country || ''}`.replace(/^,\s*|,\s*$/g, ''),
+      description: `${escort.gender || ''} | ${escort.profession || ''}`.replace(/^\s*\|\s*|\s*\|\s*$/g, ''),
+      images: escort.profileImage ? [escort.profileImage] : [],
+      status: escort.status || 'active',
+      featured: false,
+      createdBy: escort.createdBy ? {
         id: escort.createdBy.id ? escort.createdBy.id.toString() : null,
         type: escort.createdBy.type || 'Admin'
       } : null,
       type: 'admin-created',
-      createdAt: escort.createdAt
+      createdAt: escort.createdAt,
+      // Preserve all original Escort fields for modal display
+      username: escort.username,
+      firstName: escort.firstName,
+      gender: escort.gender,
+      profileImage: escort.profileImage,
+      country: escort.country,
+      region: escort.region,
+      relationshipStatus: escort.relationshipStatus,
+      interests: escort.interests,
+      profession: escort.profession,
+      height: escort.height,
+      dateOfBirth: escort.dateOfBirth
     }));
     
     const profileData = escortProfiles.map(profile => ({
@@ -1196,13 +1212,27 @@ router.get('/all-escort-profiles', adminAuth, async (req, res) => {
       description: `${profile.gender || ''} | ${profile.profession || ''}`.replace(/^\s*\|\s*|\s*\|\s*$/g, ''),
       images: profile.profileImage ? [profile.profileImage] : [],
       status: profile.status,
-      featured: false,      createdBy: profile.createdBy ? {
+      featured: false,
+      createdBy: profile.createdBy ? {
         id: profile.createdBy.id ? profile.createdBy.id.toString() : null,
         type: profile.createdBy.type || 'Agent'
       } : null,
       type: 'agent-created',
       createdAt: profile.createdAt,
-      username: profile.username
+      // Preserve all original EscortProfile fields for modal display
+      username: profile.username,
+      firstName: profile.firstName,
+      gender: profile.gender,
+      profileImage: profile.profileImage,
+      country: profile.country,
+      region: profile.region,
+      relationshipStatus: profile.relationshipStatus,
+      interests: profile.interests,
+      profession: profile.profession,
+      height: profile.height,
+      dateOfBirth: profile.dateOfBirth,
+      serialNumber: profile.serialNumber,
+      massMailActive: profile.massMailActive
     }));
     
     // Combine and sort by creation date

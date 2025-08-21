@@ -275,6 +275,62 @@ router.get('/my-escorts', async (req, res) => {
   }
 });
 
+// Get detailed escort profile by ID (for users to view)
+router.get('/escorts/:id/profile', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid escort ID' });
+    }
+
+    const profile = await EscortProfile.findOne({ 
+      _id: id, 
+      status: 'active' 
+    })
+      .populate('createdBy.id', 'name')
+      .select('-__v');
+
+    if (!profile) {
+      return res.status(404).json({ message: 'Escort profile not found' });
+    }
+
+    // Calculate age from dateOfBirth
+    let age = null;
+    if (profile.dateOfBirth) {
+      const today = new Date();
+      const birthDate = new Date(profile.dateOfBirth);
+      age = today.getFullYear() - birthDate.getFullYear();
+      const monthDiff = today.getMonth() - birthDate.getMonth();
+      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+        age--;
+      }
+    }
+
+    // Format the response with additional computed fields
+    const profileData = {
+      ...profile.toObject(),
+      age,
+      isOnline: Math.random() > 0.5, // Mock online status - replace with actual logic
+      lastSeen: profile.createdAt, // Mock last seen - replace with actual logic
+      responseTime: `${Math.floor(Math.random() * 10) + 1} minutes`, // Mock response time
+      totalMessages: Math.floor(Math.random() * 1000) + 100, // Mock message count
+      rating: (Math.random() * 2 + 3).toFixed(1), // Mock rating 3.0-5.0
+      languages: ['English', 'Swedish'], // Mock languages - add to schema if needed
+      description: profile.bio || `Hi! I'm ${profile.firstName || profile.username}. I'm here to chat and have fun conversations with you!`, // Mock description
+      photos: [] // Will be populated from AgentImage model if needed
+    };
+
+    res.json(profileData);
+  } catch (error) {
+    console.error('Error fetching escort profile details:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch escort profile details',
+      error: error.message 
+    });
+  }
+});
+
 // Mark reminder as complete
 router.post('/reminders/:id/complete', async (req, res) => {
   try {

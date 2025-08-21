@@ -137,15 +137,15 @@ escortSchema.statics.debugFindById = debugFindById;
 escortSchema.methods.toClientObject = function() {
   return {
     id: this._id,
-    name: this.name,
-    age: this.age,
-    location: this.location,
-    description: this.description,
-    images: this.images,
-    services: this.services,
-    rates: this.rates,
-    availability: this.availability,
-    featured: this.featured
+    name: this.firstName || this.username,
+    age: this.dateOfBirth ? Math.floor((Date.now() - this.dateOfBirth) / (365.25 * 24 * 60 * 60 * 1000)) : null,
+    location: `${this.region || ''}, ${this.country || ''}`.replace(/^,\s*|,\s*$/g, ''),
+    description: `${this.gender || ''} | ${this.profession || ''}`.replace(/^\s*\|\s*|\s*\|\s*$/g, ''),
+    images: this.profileImage ? [this.profileImage] : [],
+    services: [],
+    rates: {},
+    availability: this.status === 'active',
+    featured: false
   };
 };
 
