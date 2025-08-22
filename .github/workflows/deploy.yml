@@ -7,7 +7,7 @@ on:
     branches: [ main ]
   workflow_dispatch: # Allow manual trigger
 
-# Define environment variables
+
 env:
   PROJECT_PATH: ~/apps/api-Hetasinglar
 
