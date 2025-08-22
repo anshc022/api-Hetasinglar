@@ -38,7 +38,7 @@ This guide will help you deploy the Hetasinglar backend to an EC2 t2.micro insta
 2. **Run Setup Script**:
    ```bash
    # Upload and run the setup script
-   wget https://raw.githubusercontent.com/yourusername/Hetasinglar/main/backend/api-Hetasinglar/ec2-setup.sh
+   wget https://raw.githubusercontent.com/anshc022/api-Hetasinglar/main/ec2-setup.sh
    chmod +x ec2-setup.sh
    sudo ./ec2-setup.sh
    ```
