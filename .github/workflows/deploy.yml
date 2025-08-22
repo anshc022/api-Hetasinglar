@@ -1,7 +1,7 @@
 # GitHub Actions workflow for automatic deployment to AWS EC2
 name: Deploy to AWS EC2
 
-# Trigger workflow on push to main branch
+# Trigger workflow on push to main brancH
 on:
   push:
     branches: [ main ]
