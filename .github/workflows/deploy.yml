@@ -44,7 +44,7 @@ jobs:
 
       # Step 3: Copy project files to EC2 server
       - name: Copy Files to EC2
-        uses: appleboy/scp-action@v0.1.7
+        uses: appleboy/scp-action@v0.1.4
         with:
           # EC2 connection details from GitHub Secrets
           host: ${{ secrets.EC2_HOST }}
@@ -71,7 +71,7 @@ jobs:
 
       # Step 4: Deploy application using Docker Compose
       - name: Deploy Application
-        uses: appleboy/ssh-action@v0.1.11
+        uses: appleboy/ssh-action@v1.0.3
         with:
           # EC2 connection details
           host: ${{ secrets.EC2_HOST }}
