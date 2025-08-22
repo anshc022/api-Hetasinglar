@@ -35,7 +35,7 @@ ssh -i hetasinglar-key.pem ec2-user@YOUR_EC2_IP 'chmod +x ec2-setup.sh && sudo .
 # SSH to your instance first
 ssh -i hetasinglar-key.pem ec2-user@YOUR_EC2_IP
 
-# Then download and run setup script
+# Download and run setup script from public repository
 wget https://raw.githubusercontent.com/anshc022/api-Hetasinglar/main/ec2-setup.sh
 chmod +x ec2-setup.sh
 sudo ./ec2-setup.sh
