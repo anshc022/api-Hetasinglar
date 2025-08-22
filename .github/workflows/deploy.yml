@@ -33,7 +33,7 @@ jobs:
           JWT_SECRET=${{ secrets.JWT_SECRET }}
           
           # Server Configuration
-          PORT=3000
+          PORT=5000
           NODE_ENV=production
           
           # CORS Configuration
@@ -105,7 +105,7 @@ jobs:
             # Verify application is responding
             echo "Verifying deployment..."
             sleep 10
-            if curl -f http://localhost:3000/health > /dev/null 2>&1; then
+            if curl -f http://localhost:5000/api/health > /dev/null 2>&1; then
               echo "✅ Deployment successful! Application is responding."
             else
               echo "⚠️  Warning: Application health check failed. Check logs for issues."

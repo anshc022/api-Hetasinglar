@@ -79,8 +79,7 @@ const connectDB = async () => {
       maxPoolSize: isProduction ? 20 : 10, // Connection pool size
       minPoolSize: isProduction ? 5 : 2,
       maxIdleTimeMS: 30000, // 30 seconds
-      bufferCommands: false,
-      bufferMaxEntries: 0
+      bufferCommands: false
     };
 
     if (isProduction) {
