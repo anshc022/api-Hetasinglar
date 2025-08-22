@@ -10,9 +10,7 @@ const corsConfig = {
   
   // Production origins
   production: [
-    'https://hetasinglar.vercel.app',
-    'https://hetasinglar.onrender.com',
-    'https://www.hetasinglar.onrender.com',
+    // Only use environment variable for production origins
   ],
   
   // Get allowed origins based on environment
