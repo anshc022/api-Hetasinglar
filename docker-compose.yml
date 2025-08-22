@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # Main API service
+  api:
+    # Build image from local Dockerfile
+    build: .
+    
+    # Container name for easy identification
+    container_name: hetasinglar-api
+    
+    # Restart policy - always restart unless manually stopped
+    restart: unless-stopped
+    
+    # Port mapping - map host port 5000 to container port 5000
+    ports:
+      - "5000:5000"
+    
+    # Environment variables from .env file
+    env_file:
+      - .env
+    
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging configuration to prevent log overflow
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Optional: Create a custom network for future services
+networks:
+  default:
+    name: hetasinglar-network
