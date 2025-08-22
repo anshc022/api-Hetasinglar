@@ -30,6 +30,17 @@ scp -i hetasinglar-key.pem ec2-setup.sh ec2-user@YOUR_EC2_IP:~/
 ssh -i hetasinglar-key.pem ec2-user@YOUR_EC2_IP 'chmod +x ec2-setup.sh && sudo ./ec2-setup.sh'
 ```
 
+**Alternative - Download directly from GitHub:**
+```bash
+# SSH to your instance first
+ssh -i hetasinglar-key.pem ec2-user@YOUR_EC2_IP
+
+# Then download and run setup script
+wget https://raw.githubusercontent.com/anshc022/api-Hetasinglar/main/ec2-setup.sh
+chmod +x ec2-setup.sh
+sudo ./ec2-setup.sh
+```
+
 ### Step 3: Configure Environment
 
 ```bash
