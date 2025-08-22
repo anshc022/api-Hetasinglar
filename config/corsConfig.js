@@ -29,17 +29,21 @@ const corsConfig = {
   // CORS options
   getCorsOptions() {
     const allowedOrigins = this.getAllowedOrigins();
+    console.log('🌐 CORS Allowed Origins:', allowedOrigins);
     
     return {
       origin: function (origin, callback) {
+        console.log('🔍 CORS Check - Origin:', origin);
+        console.log('🔍 CORS Check - Allowed:', allowedOrigins);
+        
         // Allow requests with no origin (mobile apps, Postman, etc.)
         if (!origin) return callback(null, true);
         
         if (allowedOrigins.includes(origin)) {
+          console.log('✅ CORS Allowed for:', origin);
           callback(null, true);
         } else {
           console.log('🚫 CORS blocked origin:', origin);
-          console.log('🔍 Allowed origins:', allowedOrigins);
           callback(new Error(`Not allowed by CORS. Origin: ${origin}`));
         }
       },
@@ -52,15 +56,10 @@ const corsConfig = {
         'Accept',
         'Authorization',
         'Cache-Control',
-        'X-Access-Token',
-        'Access-Control-Allow-Origin',
-        'Access-Control-Allow-Headers',
-        'Access-Control-Allow-Methods'
+        'X-Access-Token'
       ],
       exposedHeaders: [
-        'set-cookie',
-        'Access-Control-Allow-Origin',
-        'Access-Control-Allow-Credentials'
+        'set-cookie'
       ],
       optionsSuccessStatus: 200, // Some legacy browsers choke on 204
       preflightContinue: false
