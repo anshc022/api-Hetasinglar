@@ -38,13 +38,23 @@ Access-Control-Allow-Origin header contains multiple values 'https://hetasinglar
 
 **Cause**: Nginx proxy adding wildcard CORS headers in addition to Express CORS headers.
 
-**Solution**: Disabled Express CORS middleware, using manual CORS configuration to prevent conflicts.
+**Solution**: 
+1. Express handles CORS with specific origin policy
+2. Nginx configuration updated to hide conflicting headers
+3. Automated fix script (`fix-nginx-cors.sh`) applied during deployment
+
+### Manual Fix (if needed)
+Run on EC2 instance:
+```bash
+chmod +x fix-nginx-cors.sh
+sudo ./fix-nginx-cors.sh
+```
 
 ### Configuration Changes
-1. **Disabled default CORS middleware** in server.js
-2. **Added manual CORS handling** for precise control
-3. **Single origin policy** - only allows `https://hetasinglar.vercel.app`
-4. **Handles preflight OPTIONS** requests globally
+1. **Express CORS** - Uses corsConfig.js for precise control
+2. **Nginx configuration** - Hides conflicting proxy headers  
+3. **Single origin policy** - Only allows `https://hetasinglar.vercel.app`
+4. **Automated deployment** - Fix applied automatically via GitHub Actions
 
 ## Deployment Notes
 

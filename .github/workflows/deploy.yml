@@ -78,6 +78,13 @@ jobs:
             # Show current directory for debugging
             echo "Current directory: $(pwd)"
             
+            # Fix nginx CORS configuration first
+            echo "🔧 Fixing nginx CORS configuration..."
+            if [ -f "fix-nginx-cors.sh" ]; then
+              chmod +x fix-nginx-cors.sh
+              sudo ./fix-nginx-cors.sh || echo "⚠️ Nginx fix failed, continuing with deployment..."
+            fi
+            
             # Stop existing containers gracefully
             echo "Stopping existing containers..."
             docker compose down --remove-orphans || true
