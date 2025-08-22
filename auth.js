@@ -311,24 +311,9 @@ router.post('/refresh-token', async (req, res) => {
   }
 });
 
-// OPTIONS handler for check-username endpoint
-router.options('/check-username', (req, res) => {
-  res.header('Access-Control-Allow-Origin', 'https://hetasinglar.vercel.app');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  res.sendStatus(200);
-});
-
 // Check username availability
 router.post('/check-username', async (req, res) => {
   try {
-    // Manually set CORS headers to prevent duplicates
-    res.header('Access-Control-Allow-Origin', 'https://hetasinglar.vercel.app');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-    
     const { username } = req.body;
     
     if (!username || username.trim().length === 0) {

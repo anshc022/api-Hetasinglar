@@ -127,7 +127,28 @@ const wss = new WebSocket.Server({
 });
 
 // Production-ready middleware configuration
-app.use(cors(corsConfig.getCorsOptions()));
+// app.use(cors(corsConfig.getCorsOptions())); // Disabled to prevent conflicts with nginx
+
+// Manual CORS configuration to prevent conflicts with proxy
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  console.log('🌐 Request from origin:', origin);
+  
+  // Only allow our frontend
+  if (origin === 'https://hetasinglar.vercel.app') {
+    res.header('Access-Control-Allow-Origin', 'https://hetasinglar.vercel.app');
+    res.header('Access-Control-Allow-Credentials', 'true');
+  }
+  
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, X-Access-Token');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
 
 // Security middleware for production
 if (isProduction) {
