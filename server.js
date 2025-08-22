@@ -127,7 +127,31 @@ const wss = new WebSocket.Server({
 });
 
 // Production-ready middleware configuration
-app.use(cors(corsConfig.getCorsOptions()));
+// Custom CORS middleware to handle nginx conflicts
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  // Remove any conflicting headers first
+  res.removeHeader('access-control-allow-origin');
+  res.removeHeader('access-control-allow-credentials');
+  res.removeHeader('access-control-allow-methods');
+  res.removeHeader('access-control-allow-headers');
+  
+  // Set our specific CORS headers
+  if (origin === 'https://hetasinglar.vercel.app') {
+    res.setHeader('Access-Control-Allow-Origin', 'https://hetasinglar.vercel.app');
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, X-Access-Token');
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
 
 // Security middleware for production
 if (isProduction) {
@@ -168,6 +192,36 @@ if (isProduction) {
 
 // API Routes
 app.use('/api/auth', authRoutes);
+
+// Ensure CORS headers are set properly on all responses
+app.use((req, res, next) => {
+  const originalSend = res.send;
+  const originalJson = res.json;
+  
+  res.send = function(data) {
+    // Force set CORS headers before sending
+    const origin = req.headers.origin;
+    if (origin === 'https://hetasinglar.vercel.app') {
+      this.setHeader('Access-Control-Allow-Origin', 'https://hetasinglar.vercel.app');
+    }
+    this.setHeader('Access-Control-Allow-Credentials', 'true');
+    return originalSend.call(this, data);
+  };
+  
+  res.json = function(data) {
+    // Force set CORS headers before sending JSON
+    const origin = req.headers.origin;
+    if (origin === 'https://hetasinglar.vercel.app') {
+      this.setHeader('Access-Control-Allow-Origin', 'https://hetasinglar.vercel.app');
+    }
+    this.setHeader('Access-Control-Allow-Credentials', 'true');
+    return originalJson.call(this, data);
+  };
+  
+  next();
+});
+
+// Continue with other routes...
 app.use('/api/admin', adminRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/chats', chatRoutes);
