@@ -37,7 +37,7 @@ jobs:
           NODE_ENV=production
           
           # CORS Configuration
-          ALLOWED_ORIGINS=https://hetasinglar.vercel.app,https://hetasinglar.onrender.com,https://www.hetasinglar.onrender.com
+          ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS || 'https://hetasinglar.vercel.app,https://hetasinglar.onrender.com,https://www.hetasinglar.onrender.com' }}
           EOF
 
       # Step 3: Copy project files to EC2 server
