@@ -13,9 +13,7 @@ const agentSchema = new mongoose.Schema({
   },
   name: String,
   email: {
-    type: String,
-    unique: true,
-    sparse: true
+  type: String
   },
   
   // Agent type and role
@@ -121,6 +119,11 @@ const agentSchema = new mongoose.Schema({
     default: Date.now
   }
 });
+
+// Indexes
+// Ensure unique agentId
+agentSchema.index({ agentId: 1 }, { unique: true });
+// Email unique sparse index is created via migration to avoid null duplicates
 
 agentSchema.pre('save', async function(next) {
   if (this.isModified('password')) {

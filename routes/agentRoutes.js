@@ -75,6 +75,10 @@ router.post('/', async (req, res) => {
   try {
     const { agentId, name, email, password, role, permissions } = req.body;
 
+    console.log('=== AGENT CREATION DEBUG ===');
+    console.log('Request body:', req.body);
+    console.log('Extracted fields:', { agentId, name, email, password, role, permissions });
+
     // Check if agent already exists
     const queryConditions = [{ agentId }];
     
@@ -82,16 +86,34 @@ router.post('/', async (req, res) => {
     if (email) {
       queryConditions.push({ email });
     }
+
+    console.log('Query conditions:', JSON.stringify(queryConditions, null, 2));
     
     const existingAgent = await Agent.findOne({ 
       $or: queryConditions
     });
+
+    console.log('Existing agent found:', existingAgent ? 'YES' : 'NO');
+    if (existingAgent) {
+      console.log('Existing agent details:', {
+        agentId: existingAgent.agentId,
+        email: existingAgent.email,
+        name: existingAgent.name
+      });
+    }
     
     if (existingAgent) {
-      return res.status(400).json({ 
-        message: existingAgent.email === email ? 
-          'Email already in use' : 'Agent ID already taken' 
-      });
+      // Check which field caused the conflict
+      if (existingAgent.agentId === agentId) {
+        console.log('Conflict reason: Agent ID already taken');
+        return res.status(400).json({ message: 'Agent ID already taken' });
+      } else if (email && existingAgent.email === email) {
+        console.log('Conflict reason: Email already in use');
+        return res.status(400).json({ message: 'Email already in use' });
+      } else {
+        console.log('Conflict reason: Unknown conflict');
+        return res.status(400).json({ message: 'Agent already exists' });
+      }
     }
 
     // Create the new agent
