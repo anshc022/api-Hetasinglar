@@ -25,6 +25,11 @@ userSchema.pre('save', async function(next) {
 // Auth Middleware
 const auth = async (req, res, next) => {
   try {
+    // Allow OPTIONS requests to pass through without authentication (for CORS preflight)
+    if (req.method === 'OPTIONS') {
+      return next();
+    }
+    
     let token = req.headers.authorization;
     
     // Handle different token formats
