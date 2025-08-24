@@ -1,4 +1,5 @@
-name: Deploy to EC2
+# GitHub Actions workflow for automatic deployment to AWS EC2
+name: Deploy to AWS EC2
 
 # Trigger workflow on push to main branch
 on:
@@ -6,76 +7,119 @@ on:
     branches: [ main ]
   workflow_dispatch: # Allow manual trigger
 
-# Environment variables
+
 env:
-  PROJECT_PATH: /home/ec2-user/hetasinglar-api
+  PROJECT_PATH: ~/apps/api-Hetasinglar
 
 jobs:
   deploy:
-    name: Deploy Application
+    name: Deploy to EC2
     runs-on: ubuntu-latest
-    
+
     steps:
-      # Step 1: Checkout code
+      # Step 1: Checkout the repository code
       - name: Checkout Repository
         uses: actions/checkout@v4
-        
-      # Step 2: Deploy to EC2 via SSH
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.0.3
+
+      # Step 2: Create Environment File
+      - name: Create Environment File
+        run: |
+          echo "Creating .env file with production secrets..."
+          cat > .env << EOF
+          # Database Configuration
+          MONGODB_URI=${{ secrets.MONGODB_URI }}
+          
+          # Authentication
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          
+          # Server Configuration
+          PORT=5000
+          NODE_ENV=production
+          
+          # CORS Configuration
+          ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS || 'https://hetasinglar.vercel.app' }}
+          EOF
+
+      # Step 3: Copy project files to EC2 server
+      - name: Copy Files to EC2
+        uses: appleboy/scp-action@v0.1.4
         with:
+          # EC2 connection details from GitHub Secrets
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
           
+          # Source and destination paths
+          source: "."
+          target: ${{ env.PROJECT_PATH }}
+          
+          # Overwrite existing files and remove extra files
+          overwrite: true
+          rm: true
+
+      # Step 4: Deploy application using Docker Compose
+      - name: Deploy Application
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          # EC2 connection details
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          
+          # Deployment commands
           script: |
-            echo "🚀 Starting deployment process..."
+            echo "Starting deployment process..."
             
             # Navigate to project directory
             cd ${{ env.PROJECT_PATH }}
             
-            # Pull latest changes
-            echo "📥 Pulling latest changes..."
-            git pull origin main
+            # Show current directory for debugging
+            echo "Current directory: $(pwd)"
             
-            # Stop existing containers
-            echo "🛑 Stopping existing containers..."
+            # Fix nginx CORS configuration first
+            echo "🔧 Fixing nginx CORS configuration..."
+            if [ -f "fix-nginx-cors.sh" ]; then
+              chmod +x fix-nginx-cors.sh
+              sudo ./fix-nginx-cors.sh || echo "⚠️ Nginx fix failed, continuing with deployment..."
+            fi
+            
+            # Stop existing containers gracefully
+            echo "Stopping existing containers..."
             docker compose down --remove-orphans || true
             
-            # Remove old images to free up space
-            echo "🧹 Cleaning up old Docker images..."
+            # Remove old images to free up space (optional)
+            echo "Cleaning up old Docker images..."
             docker image prune -af || true
             
             # Build new image with latest code
-            echo "🔨 Building Docker image..."
+            echo "Building Docker image..."
             docker compose build --no-cache
             
             # Start containers in detached mode
-            echo "▶️ Starting containers..."
+            echo "Starting containers..."
             docker compose up -d
             
             # Show container status
-            echo "📊 Container status:"
+            echo "Container status:"
             docker compose ps
             
-            # Show recent logs
-            echo "📋 Recent logs:"
+            # Show recent logs for debugging
+            echo "Recent logs:"
             docker compose logs --tail=20
             
-            # Health check
-            echo "🏥 Performing health check..."
+            # Verify application is responding
+            echo "Verifying deployment..."
             sleep 10
             if curl -f http://localhost:5000/api/health > /dev/null 2>&1; then
               echo "✅ Deployment successful! Application is responding."
             else
-              echo "⚠️ Warning: Health check failed. Check logs for issues."
+              echo "⚠️  Warning: Application health check failed. Check logs for issues."
               docker compose logs --tail=50
             fi
-            
-            echo "🎉 Deployment completed!"
 
-      # Step 3: Deployment notification
+      # Step 5: Deployment notification (optional)
       - name: Deployment Status
         if: always()
         run: |
