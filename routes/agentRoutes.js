@@ -129,7 +129,27 @@ router.post('/', async (req, res) => {
     res.status(201).json(agentResponse);
   } catch (error) {
     console.error('Error creating agent:', error);
-    res.status(500).json({ message: 'Failed to create agent' });
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        message: 'Validation error', 
+        details: error.message 
+      });
+    }
+    
+    // Handle duplicate key errors
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(400).json({ 
+        message: `${field} already exists` 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Failed to create agent',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
