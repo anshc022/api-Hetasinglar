@@ -1,0 +1,87 @@
+name: Deploy to EC2
+
+# Trigger workflow on push to main branch
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # Allow manual trigger
+
+# Environment variables
+env:
+  PROJECT_PATH: /home/ec2-user/hetasinglar-api
+
+jobs:
+  deploy:
+    name: Deploy Application
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        
+      # Step 2: Deploy to EC2 via SSH
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          
+          script: |
+            echo "🚀 Starting deployment process..."
+            
+            # Navigate to project directory
+            cd ${{ env.PROJECT_PATH }}
+            
+            # Pull latest changes
+            echo "📥 Pulling latest changes..."
+            git pull origin main
+            
+            # Stop existing containers
+            echo "🛑 Stopping existing containers..."
+            docker compose down --remove-orphans || true
+            
+            # Remove old images to free up space
+            echo "🧹 Cleaning up old Docker images..."
+            docker image prune -af || true
+            
+            # Build new image with latest code
+            echo "🔨 Building Docker image..."
+            docker compose build --no-cache
+            
+            # Start containers in detached mode
+            echo "▶️ Starting containers..."
+            docker compose up -d
+            
+            # Show container status
+            echo "📊 Container status:"
+            docker compose ps
+            
+            # Show recent logs
+            echo "📋 Recent logs:"
+            docker compose logs --tail=20
+            
+            # Health check
+            echo "🏥 Performing health check..."
+            sleep 10
+            if curl -f http://localhost:5000/api/health > /dev/null 2>&1; then
+              echo "✅ Deployment successful! Application is responding."
+            else
+              echo "⚠️ Warning: Health check failed. Check logs for issues."
+              docker compose logs --tail=50
+            fi
+            
+            echo "🎉 Deployment completed!"
+
+      # Step 3: Deployment notification
+      - name: Deployment Status
+        if: always()
+        run: |
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "🚀 Deployment completed successfully!"
+          else
+            echo "❌ Deployment failed. Check the logs above."
+            exit 1
+          fi

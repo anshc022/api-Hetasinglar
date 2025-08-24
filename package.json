@@ -13,6 +13,8 @@
     "check-production": "node production-status.js",
     "test-endpoints": "node scan-endpoints.js",
     "test-endpoints-full": "node test-all-endpoints.js",
+    "test-cors": "node test-cors.js",
+    "benchmark": "node benchmark-api.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
