@@ -52,6 +52,24 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// Get all escort profiles (PUBLIC - no auth required)
+router.get('/escorts', async (req, res) => {
+  try {
+    const profiles = await EscortProfile.find({ status: 'active' })
+      .populate('createdBy', 'name')
+      .select('-__v')
+      .sort({ createdAt: -1 });
+    
+    res.json(profiles);
+  } catch (error) {
+    console.error('Error fetching escort profiles:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch escort profiles',
+      error: error.message 
+    });
+  }
+});
+
 // Protect all routes after this point
 router.use(auth);
 
@@ -230,24 +248,6 @@ router.post('/escorts', async (req, res) => {
     console.error('Error creating escort profile:', error);
     res.status(500).json({ 
       message: 'Failed to create escort profile',
-      error: error.message 
-    });
-  }
-});
-
-// Get all escort profiles
-router.get('/escorts', async (req, res) => {
-  try {
-    const profiles = await EscortProfile.find({ status: 'active' })
-      .populate('createdBy', 'name')
-      .select('-__v')
-      .sort({ createdAt: -1 });
-    
-    res.json(profiles);
-  } catch (error) {
-    console.error('Error fetching escort profiles:', error);
-    res.status(500).json({ 
-      message: 'Failed to fetch escort profiles',
       error: error.message 
     });
   }
