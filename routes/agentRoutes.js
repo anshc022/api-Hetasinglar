@@ -76,8 +76,15 @@ router.post('/', async (req, res) => {
     const { agentId, name, email, password, role, permissions } = req.body;
 
     // Check if agent already exists
+    const queryConditions = [{ agentId }];
+    
+    // Only check email if it's provided
+    if (email) {
+      queryConditions.push({ email });
+    }
+    
     const existingAgent = await Agent.findOne({ 
-      $or: [{ agentId }, { email }] 
+      $or: queryConditions
     });
     
     if (existingAgent) {
