@@ -6,10 +6,14 @@
   "scripts": {
     "start": "node server.js",
     "start-with-alerts": "node start-with-alerts.js",
+    "start-production-check": "node start-with-alerts.js production",
     "dev": "nodemon server.js",
     "monitor": "node health-monitor.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "test-cors": "node test-cors.js"
+    "monitor-production": "node health-monitor.js production",
+    "check-production": "node production-status.js",
+    "test-endpoints": "node scan-endpoints.js",
+    "test-endpoints-full": "node test-all-endpoints.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "axios": "^1.10.0",

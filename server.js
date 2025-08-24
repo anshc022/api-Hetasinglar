@@ -3,8 +3,6 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const WebSocket = require('ws');
 const http = require('http');
-require('dotenv').config();
-
 const corsConfig = require('./config/corsConfig');
 const { router: authRoutes } = require('./auth');
 const adminRoutes = require('./routes/adminRoutes');
@@ -27,153 +25,42 @@ const Subscription = require('./models/Subscription');
 const app = express();
 const server = http.createServer(app);
 
-// Production-ready configuration
-const isProduction = process.env.NODE_ENV === 'production';
-const PORT = process.env.PORT || 5000;
+// CORS Configuration
+console.log('🌐 CORS Configuration:');
+console.log('📍 Environment:', process.env.NODE_ENV || 'development');
+console.log('� Allowed Origins:', corsConfig.getAllowedOrigins());
 
-// Enhanced logging for production
-const log = {
-  info: (message, ...args) => {
-    console.log(`[${new Date().toISOString()}] INFO: ${message}`, ...args);
-  },
-  error: (message, ...args) => {
-    console.error(`[${new Date().toISOString()}] ERROR: ${message}`, ...args);
-  },
-  warn: (message, ...args) => {
-    console.warn(`[${new Date().toISOString()}] WARN: ${message}`, ...args);
-  }
-};
-
-// Process error handlers for production
-process.on('uncaughtException', (err) => {
-  log.error('Uncaught Exception:', err);
-  if (isProduction) {
-    process.exit(1);
-  }
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  log.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  if (isProduction) {
-    process.exit(1);
-  }
-});
-
-// Graceful shutdown handler
-process.on('SIGTERM', () => {
-  log.info('SIGTERM received, shutting down gracefully');
-  server.close(() => {
-    log.info('Process terminated');
-    process.exit(0);
-  });
-});
-
-// Database connection with enhanced error handling and production settings
-const connectDB = async () => {
-  try {
-    const mongoOptions = {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 10000, // 10 seconds
-      socketTimeoutMS: 45000, // 45 seconds
-      maxPoolSize: isProduction ? 20 : 10, // Connection pool size
-      minPoolSize: isProduction ? 5 : 2,
-      maxIdleTimeMS: 30000, // 30 seconds
-      bufferCommands: false
-    };
-
-    if (isProduction) {
-      mongoOptions.retryWrites = true;
-      mongoOptions.w = 'majority';
-    }
-
-    const conn = await mongoose.connect(process.env.MONGODB_URI, mongoOptions);
-    log.info('MongoDB connected successfully:', conn.connection.host);
-    
-    mongoose.connection.on('error', (err) => {
-      log.error('MongoDB connection error:', err);
-    });
-
-    mongoose.connection.on('disconnected', () => {
-      log.warn('MongoDB disconnected');
-    });
-
-    mongoose.connection.on('reconnected', () => {
-      log.info('MongoDB reconnected');
-    });
-
-  } catch (error) {
-    log.error('Database connection failed:', error.message);
-    if (isProduction) {
-      process.exit(1);
-    }
-  }
-};
-
-// Initialize database connection
-connectDB();
-
-// CORS Configuration with production settings
-log.info('🌐 CORS Configuration:');
-log.info('📍 Environment:', process.env.NODE_ENV || 'development');
-log.info('🔗 Allowed Origins:', corsConfig.getAllowedOrigins());
-
-// WebSocket server with enhanced configuration
 const wss = new WebSocket.Server({ 
   server,
-  verifyClient: (info) => corsConfig.verifyWebSocketClient(info),
-  clientTracking: true,
-  maxPayload: 1024 * 1024 // 1MB max payload
+  verifyClient: (info) => corsConfig.verifyWebSocketClient(info)
 });
 
-// Production-ready middleware configuration
-// Note: CORS headers are handled by the reverse proxy (nginx). The app avoids setting them
-// to prevent duplicate headers. If you need app-level CORS, re-enable the CORS middleware
-// with strict allowed origins via corsConfig.getCorsOptions().
-
-// Security middleware for production
-if (isProduction) {
-  app.set('trust proxy', 1); // Trust first proxy for AWS ELB
-  app.use((req, res, next) => {
-    // Security headers
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    next();
-  });
-}
-
-// Body parsing middleware with size limits
-app.use(express.json({ 
-  limit: isProduction ? '10mb' : '50mb',
-  verify: (req, res, buf) => {
-    req.rawBody = buf;
+// CORS middleware for credentialed requests - must use specific origin, not wildcard
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  // Set specific origin for credentialed requests
+  if (origin === 'https://hetasinglar.vercel.app') {
+    res.setHeader('Access-Control-Allow-Origin', 'https://hetasinglar.vercel.app');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else {
+    // For non-credentialed requests from other origins, allow wildcard
+    res.setHeader('Access-Control-Allow-Origin', '*');
   }
-}));
-app.use(express.urlencoded({ 
-  extended: true, 
-  limit: isProduction ? '10mb' : '50mb' 
-}));
-
-// Request logging middleware for production
-if (isProduction) {
-  app.use((req, res, next) => {
-    const start = Date.now();
-    res.on('finish', () => {
-      const duration = Date.now() - start;
-      log.info(`${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`);
-    });
-    next();
-  });
-}
-
-// API Routes
+  
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, X-Access-Token');
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ limit: '5mb', extended: true }));
 app.use('/api/auth', authRoutes);
-
-// CORS headers are not set at app level to avoid conflict with proxy
-
-// Continue with other routes...
 app.use('/api/admin', adminRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/chats', chatRoutes);
@@ -181,10 +68,10 @@ app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/commission', commissionRoutes);
 app.use('/api/user-assignment', userAssignmentRoutes);
 app.use('/api/affiliate', affiliateRoutes);
-app.use('/api/logs', logRoutes);
-app.use('/api/first-contact', firstContactRoutes);
+app.use('/api/logs', logRoutes); // Add logs API routes
+app.use('/api/first-contact', firstContactRoutes); // Add first contact API routes
 
-// Enhanced health check endpoint
+// Health check endpoint
 app.get('/api/health', (req, res) => {
   const healthStatus = {
     status: 'OK',
@@ -197,21 +84,11 @@ app.get('/api/health', (req, res) => {
       database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
       websocket: wss.clients.size,
       reminders: 'active'
-    },
-    system: {
-      platform: process.platform,
-      nodeVersion: process.version,
-      cpuUsage: process.cpuUsage()
     }
   };
   
-  log.info('🟢 API Health Check:', healthStatus.timestamp);
+  console.log('🟢 API Health Check:', healthStatus.timestamp);
   res.json(healthStatus);
-});
-
-// Minimal OPTIONS handler to reduce 404 noise; proxy should finalize CORS
-app.options('*', (req, res) => {
-  res.status(200).end();
 });
 
 // CORS Test endpoint
@@ -720,47 +597,35 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Production-ready server startup
-server.listen(PORT, '0.0.0.0', () => {
+// Update the server start
+server.listen(process.env.PORT || 5000, () => {
+  const port = process.env.PORT || 5000;
   const timestamp = new Date().toISOString();
   
-  log.info('\n' + '='.repeat(60));
-  log.info('🚀 HETASINGLAR BACKEND SERVER STARTED');
-  log.info('='.repeat(60));
-  log.info(`📍 Server URL: ${isProduction ? 'Production Environment' : `http://localhost:${PORT}`}`);
-  log.info(`⏰ Started at: ${timestamp}`);
-  log.info(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-  log.info(`💾 Database: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Connecting...'}`);
-  log.info(`🔗 Health Check: ${isProduction ? '/api/health' : `http://localhost:${PORT}/api/health`}`);
-  log.info(`📊 Status Check: ${isProduction ? '/api/status' : `http://localhost:${PORT}/api/status`}`);
-  log.info('='.repeat(60));
-  log.info('🟢 API READY - All endpoints are available');
-  log.info('🔄 WebSocket server is running');
-  log.info('✅ Backend is fully operational\n');
+  console.log('\n' + '='.repeat(60));
+  console.log('🚀 HETASINGLAR BACKEND SERVER STARTED');
+  console.log('='.repeat(60));
+  console.log(`📍 Server URL: http://localhost:${port}`);
+  console.log(`⏰ Started at: ${timestamp}`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Health Check: http://localhost:${port}/api/health`);
+  console.log(`📊 Status Check: http://localhost:${port}/api/status`);
+  console.log('='.repeat(60));
+  console.log('🟢 API READY - All endpoints are available');
+  console.log('🔄 WebSocket server is running');
+  console.log('✅ Backend is fully operational\n');
   
   // Log available endpoints
-  log.info('📋 Available API Endpoints:');
-  log.info('   • /api/health - Health check');
-  log.info('   • /api/status - Server status');
-  log.info('   • /api/auth - Authentication (with username validation)');
-  log.info('   • /api/admin - Admin panel');
-  log.info('   • /api/agents - Agent management');
-  log.info('   • /api/chats - Chat system');
-  log.info('   • /api/subscription - Subscriptions');
-  log.info('   • /api/commission - Commission system');
-  log.info('   • /api/affiliate - Affiliate program');
-  log.info('   • /api/logs - System logs');
-  log.info('   • /api/first-contact - First contact\n');
-});
-
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    log.error(`Port ${PORT} is already in use`);
-    process.exit(1);
-  } else {
-    log.error('Server error:', err);
-    if (isProduction) {
-      process.exit(1);
-    }
-  }
+  console.log('📋 Available API Endpoints:');
+  console.log('   • /api/health - Health check');
+  console.log('   • /api/status - Server status');
+  console.log('   • /api/auth - Authentication');
+  console.log('   • /api/admin - Admin panel');
+  console.log('   • /api/agents - Agent management');
+  console.log('   • /api/chats - Chat system');
+  console.log('   • /api/subscription - Subscriptions');
+  console.log('   • /api/commission - Commission system');
+  console.log('   • /api/affiliate - Affiliate program');
+  console.log('   • /api/logs - System logs');
+  console.log('   • /api/first-contact - First contact\n');
 });

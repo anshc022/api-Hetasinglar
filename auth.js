@@ -311,67 +311,6 @@ router.post('/refresh-token', async (req, res) => {
   }
 });
 
-// Check username availability
-router.post('/check-username', async (req, res) => {
-  try {
-    const { username } = req.body;
-    
-    if (!username || username.trim().length === 0) {
-      return res.status(400).json({ 
-        available: false, 
-        message: 'Username is required' 
-      });
-    }
-
-    const trimmedUsername = username.trim();
-    
-    // Basic validation
-    if (trimmedUsername.length < 3) {
-      return res.status(400).json({ 
-        available: false, 
-        message: 'Username must be at least 3 characters long' 
-      });
-    }
-
-    if (trimmedUsername.length > 30) {
-      return res.status(400).json({ 
-        available: false, 
-        message: 'Username must be less than 30 characters' 
-      });
-    }
-
-    // Check if username contains only allowed characters (letters, numbers, underscores, dots)
-    if (!/^[a-zA-Z0-9_.]+$/.test(trimmedUsername)) {
-      return res.status(400).json({ 
-        available: false, 
-        message: 'Username can only contain letters, numbers, underscores, and dots' 
-      });
-    }
-
-    // Check if username exists in database
-    const existingUser = await User.findOne({ username: trimmedUsername });
-    
-    if (existingUser) {
-      return res.json({ 
-        available: false, 
-        message: 'Username is already taken' 
-      });
-    }
-
-    return res.json({ 
-      available: true, 
-      message: 'Username is available' 
-    });
-
-  } catch (error) {
-    console.error('Username check error:', error);
-    res.status(500).json({ 
-      available: false, 
-      message: 'Error checking username availability' 
-    });
-  }
-});
-
 // Routes
 router.post('/register', async (req, res) => {
   try {
