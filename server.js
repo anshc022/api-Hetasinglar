@@ -79,6 +79,7 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || 'development',
     version: require('./package.json').version,
+    deploymentId: 'deploy-2025-08-24-v3', // Track deployment
     memory: process.memoryUsage(),
     services: {
       database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
