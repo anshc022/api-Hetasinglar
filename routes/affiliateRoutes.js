@@ -383,7 +383,7 @@ router.get('/admin/affiliate-links', adminAuth, async (req, res) => {
           createdAt: link.createdAt,
           clickCount: link.clickCount || 0,
           registrationCount: referralCount,
-          link: `${process.env.FRONTEND_URL || 'http://localhost:8000'}/register?ref=${link.affiliateCode}`
+          link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${link.affiliateCode}`
         };
       })
     );
@@ -851,7 +851,7 @@ router.post('/create-link', agentAuth, async (req, res) => {
 
     res.json({
       success: true,
-      link: `${process.env.FRONTEND_URL || 'http://localhost:8000'}/register?ref=${affiliateLink.affiliateCode}`,
+      link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${affiliateLink.affiliateCode}`,
       affiliateCode: affiliateLink.affiliateCode,
       isActive: affiliateLink.isActive,
       createdAt: affiliateLink.createdAt
@@ -879,7 +879,7 @@ router.get('/my-link', agentAuth, async (req, res) => {
 
     res.json({
       hasLink: true,
-      link: `${process.env.FRONTEND_URL || 'http://localhost:8000'}/register?ref=${affiliateLink.affiliateCode}`,
+      link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${affiliateLink.affiliateCode}`,
       affiliateCode: affiliateLink.affiliateCode,
       isActive: affiliateLink.isActive,
       createdAt: affiliateLink.createdAt,
@@ -1133,7 +1133,7 @@ router.post('/regenerate', agentAuth, async (req, res) => {
     res.json({
       success: true,
       hasLink: true,
-      link: `${process.env.FRONTEND_URL || 'http://localhost:8000'}/register?ref=${affiliateCode}`,
+      link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${affiliateCode}`,
       affiliateCode: affiliateCode,
       isActive: true,
       createdAt: newAffiliateLink.createdAt,

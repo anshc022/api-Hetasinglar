@@ -1588,7 +1588,7 @@ router.get('/affiliate-links', adminAuth, async (req, res) => {
           createdAt: link.createdAt,
           clickCount: link.clickCount || 0,
           registrationCount: referralCount,
-          link: `${process.env.FRONTEND_URL || 'http://localhost:8000'}/register?ref=${link.affiliateCode}`
+          link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${link.affiliateCode}`
         };
       })
     );
