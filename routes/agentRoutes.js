@@ -70,6 +70,62 @@ router.get('/escorts', async (req, res) => {
   }
 });
 
+// Create a new agent (PUBLIC - no auth required, but should be restricted in production)
+router.post('/', async (req, res) => {
+  try {
+    const { agentId, name, email, password, role, permissions } = req.body;
+
+    // Check if agent already exists
+    const existingAgent = await Agent.findOne({ 
+      $or: [{ agentId }, { email }] 
+    });
+    
+    if (existingAgent) {
+      return res.status(400).json({ 
+        message: existingAgent.email === email ? 
+          'Email already in use' : 'Agent ID already taken' 
+      });
+    }
+
+    // Create the new agent
+    const newAgent = new Agent({
+      agentId,
+      name,
+      email,
+      password, // will be hashed by pre-save hook
+      role: role || 'agent',
+      permissions: permissions || {
+        canMessage: true,
+        canModerate: false,
+        canViewStats: true
+      },
+      stats: {
+        liveMessageCount: 0,
+        totalMessagesSent: 0,
+        activeCustomers: 0
+      }
+    });
+
+    await newAgent.save();
+
+    // Return the new agent without password
+    const agentResponse = {
+      id: newAgent._id,
+      agentId: newAgent.agentId,
+      name: newAgent.name,
+      email: newAgent.email,
+      role: newAgent.role,
+      permissions: newAgent.permissions,
+      stats: newAgent.stats
+    };
+
+    res.status(201).json(agentResponse);
+  } catch (error) {
+    console.error('Error creating agent:', error);
+    res.status(500).json({ message: 'Failed to create agent' });
+  }
+});
+
 // Protect all routes after this point
 router.use(auth);
 
@@ -156,62 +212,6 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Error fetching agents:', error);
     res.status(500).json({ message: 'Failed to fetch agents' });
-  }
-});
-
-// Create a new agent
-router.post('/', async (req, res) => {
-  try {
-    const { agentId, name, email, password, role, permissions } = req.body;
-
-    // Check if agent already exists
-    const existingAgent = await Agent.findOne({ 
-      $or: [{ agentId }, { email }] 
-    });
-    
-    if (existingAgent) {
-      return res.status(400).json({ 
-        message: existingAgent.email === email ? 
-          'Email already in use' : 'Agent ID already taken' 
-      });
-    }
-
-    // Create the new agent
-    const newAgent = new Agent({
-      agentId,
-      name,
-      email,
-      password, // will be hashed by pre-save hook
-      role: role || 'agent',
-      permissions: permissions || {
-        canMessage: true,
-        canModerate: false,
-        canViewStats: true
-      },
-      stats: {
-        liveMessageCount: 0,
-        totalMessagesSent: 0,
-        activeCustomers: 0
-      }
-    });
-
-    await newAgent.save();
-
-    // Return the new agent without password
-    const agentResponse = {
-      id: newAgent._id,
-      agentId: newAgent.agentId,
-      name: newAgent.name,
-      email: newAgent.email,
-      role: newAgent.role,
-      permissions: newAgent.permissions,
-      stats: newAgent.stats
-    };
-
-    res.status(201).json(agentResponse);
-  } catch (error) {
-    console.error('Error creating agent:', error);
-    res.status(500).json({ message: 'Failed to create agent' });
   }
 });
 
