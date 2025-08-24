@@ -173,9 +173,81 @@ router.get('/agents', adminAuth, async (req, res) => {
 
 router.put('/agents/:id', adminAuth, async (req, res) => {
   try {
-    const agent = await Agent.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    res.json(agent);
+    const { name, email, role, permissions, agentId } = req.body;
+    const targetAgentId = req.params.id;
+
+    console.log('Admin updating agent:', { targetAgentId, body: req.body }); // Debug log
+
+    // Check if agent exists
+    const existingAgent = await Agent.findById(targetAgentId);
+    if (!existingAgent) {
+      return res.status(404).json({ message: 'Agent not found' });
+    }
+
+    // Check for duplicate email/agentId if they're being changed
+    if (email !== existingAgent.email || agentId !== existingAgent.agentId) {
+      const queryConditions = [];
+      
+      if (email && email !== existingAgent.email) {
+        queryConditions.push({ email });
+      }
+      
+      if (agentId && agentId !== existingAgent.agentId) {
+        queryConditions.push({ agentId });
+      }
+
+      if (queryConditions.length > 0) {
+        const duplicate = await Agent.findOne({
+          $or: queryConditions,
+          _id: { $ne: targetAgentId }
+        });
+
+        if (duplicate) {
+          const conflictField = duplicate.email === email ? 'email' : 'agentId';
+          return res.status(400).json({ 
+            message: `${conflictField === 'email' ? 'Email' : 'Agent ID'} already in use` 
+          });
+        }
+      }
+    }
+
+    // Update the agent
+    const updateData = {
+      name,
+      email,
+      role,
+      permissions
+    };
+
+    // Only include agentId if it's provided and different
+    if (agentId && agentId !== existingAgent.agentId) {
+      updateData.agentId = agentId;
+    }
+
+    const updatedAgent = await Agent.findByIdAndUpdate(
+      targetAgentId, 
+      updateData, 
+      { new: true }
+    ).select('-password');
+
+    if (!updatedAgent) {
+      return res.status(404).json({ message: 'Agent not found after update' });
+    }
+
+    // Format the response to match what the frontend expects
+    const agentResponse = {
+      id: updatedAgent._id,
+      agentId: updatedAgent.agentId,
+      name: updatedAgent.name,
+      email: updatedAgent.email,
+      role: updatedAgent.role,
+      permissions: updatedAgent.permissions,
+      stats: updatedAgent.stats
+    };
+
+    res.json(agentResponse);
   } catch (error) {
+    console.error('Error updating agent via admin:', error);
     res.status(500).json({ message: 'Failed to update agent' });
   }
 });

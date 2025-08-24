@@ -139,8 +139,11 @@ const adminAuth = async (req, res, next) => {
 
     const decoded = jwt.verify(token.trim(), process.env.JWT_SECRET || 'your-secret-key');
     
+    console.log('Admin auth - decoded token:', decoded); // Debug log
+    
     if (!decoded.adminId) {
-      return res.status(401).json({ message: 'Invalid admin token' });
+      console.log('Admin auth - no adminId in token, decoded:', decoded); // Debug log
+      return res.status(401).json({ message: 'Invalid token payload - missing adminId' });
     }
     
     // Fetch the admin document from database to get the actual _id
