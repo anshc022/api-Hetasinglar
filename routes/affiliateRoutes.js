@@ -7,6 +7,9 @@ const Earnings = require('../models/Earnings');
 const User = require('../models/User');
 const { adminAuth, agentAuth } = require('../auth');
 
+// Use a consistent frontend URL (avoid localhost in production)
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app').replace(/\/$/, '');
+
 
 // Get affiliate dashboard data for agent
 router.get('/dashboard/:agentId', agentAuth, async (req, res) => {
@@ -383,7 +386,7 @@ router.get('/admin/affiliate-links', adminAuth, async (req, res) => {
           createdAt: link.createdAt,
           clickCount: link.clickCount || 0,
           registrationCount: referralCount,
-          link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${link.affiliateCode}`
+          link: `${FRONTEND_URL}/register?ref=${link.affiliateCode}`
         };
       })
     );
@@ -851,7 +854,7 @@ router.post('/create-link', agentAuth, async (req, res) => {
 
     res.json({
       success: true,
-      link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${affiliateLink.affiliateCode}`,
+      link: `${FRONTEND_URL}/register?ref=${affiliateLink.affiliateCode}`,
       affiliateCode: affiliateLink.affiliateCode,
       isActive: affiliateLink.isActive,
       createdAt: affiliateLink.createdAt
@@ -879,7 +882,7 @@ router.get('/my-link', agentAuth, async (req, res) => {
 
     res.json({
       hasLink: true,
-      link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${affiliateLink.affiliateCode}`,
+      link: `${FRONTEND_URL}/register?ref=${affiliateLink.affiliateCode}`,
       affiliateCode: affiliateLink.affiliateCode,
       isActive: affiliateLink.isActive,
       createdAt: affiliateLink.createdAt,
@@ -1133,7 +1136,7 @@ router.post('/regenerate', agentAuth, async (req, res) => {
     res.json({
       success: true,
       hasLink: true,
-      link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${affiliateCode}`,
+      link: `${FRONTEND_URL}/register?ref=${affiliateCode}`,
       affiliateCode: affiliateCode,
       isActive: true,
       createdAt: newAffiliateLink.createdAt,

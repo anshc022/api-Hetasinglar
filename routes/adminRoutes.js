@@ -13,6 +13,9 @@ const AffiliateLink = require('../models/AffiliateLink');
 const { adminAuth } = require('../auth');
 const router = express.Router();
 
+// Use a consistent frontend URL (avoid localhost in production)
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app').replace(/\/$/, '');
+
 // Admin Auth (no auth middleware needed for login)
 router.post('/login', async (req, res) => {
   try {
@@ -500,8 +503,8 @@ router.post('/subscription-plans', adminAuth, async (req, res) => {
       coins,
       bonusCoins = 0,
       features = {},
-  description,
-  isActive
+      description,
+      isActive
     } = req.body || {};
 
     // Basic checks to avoid generic 500s
@@ -1639,7 +1642,7 @@ router.get('/affiliate-links', adminAuth, async (req, res) => {
           createdAt: link.createdAt,
           clickCount: link.clickCount || 0,
           registrationCount: referralCount,
-          link: `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/register?ref=${link.affiliateCode}`
+          link: `${FRONTEND_URL}/register?ref=${link.affiliateCode}`
         };
       })
     );
