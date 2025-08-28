@@ -530,9 +530,13 @@ router.post('/subscription-plans', adminAuth, async (req, res) => {
       price: Number(price),
       coins: Number(coins) || 0,
       bonusCoins: Number(bonusCoins) || 0,
-      features: features || {},
-      description
+      features: features || {}
     };
+
+    // Only include description if it's provided
+    if (description) {
+      planData.description = description;
+    }
 
     if (typeof isActive === 'boolean') {
       planData.isActive = isActive;
