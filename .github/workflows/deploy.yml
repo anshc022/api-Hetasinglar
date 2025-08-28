@@ -81,41 +81,73 @@ jobs:
             # Show current directory for debugging
             echo "Current directory: $(pwd)"
             
-            # Stop any existing Node.js processes
+            # Stop any existing Node.js processes more gracefully
             echo "Stopping existing Node.js processes..."
-            pkill -f "node server.js" || true
-            pkill -f "pm2" || true
+            if command -v pm2 >/dev/null 2>&1; then
+              echo "Stopping PM2 processes..."
+              pm2 stop all || true
+              pm2 delete all || true
+            fi
+            
+            # Kill any remaining node processes gracefully
+            if pgrep -f "node server.js" > /dev/null; then
+              echo "Stopping existing Node.js server..."
+              pkill -TERM -f "node server.js" || true
+              sleep 3
+              pkill -KILL -f "node server.js" || true
+            fi
             
             # Install dependencies
             echo "Installing dependencies..."
-            npm install --production
+            npm install --production --silent
+            
+            # Create environment file with production values
+            echo "Creating production environment file..."
+            cat > .env << 'EOF'
+            PORT=5000
+            NODE_ENV=production
+            FRONTEND_URL=https://hetasinglar.vercel.app
+            ALLOWED_ORIGINS=https://hetasinglar.vercel.app,https://hetasinglar.onrender.com,https://www.hetasinglar.onrender.com
+            MONGODB_URI=${{ secrets.MONGODB_URI }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            EOF
             
             # Start the application using PM2 (if available) or directly with Node.js
             echo "Starting application..."
             if command -v pm2 >/dev/null 2>&1; then
               echo "Using PM2 to start application..."
-              pm2 stop all || true
-              pm2 start server.js --name "hetasinglar-api" --max-memory-restart 1G
+              pm2 start server.js --name "hetasinglar-api" --max-memory-restart 1G --time
               pm2 save
               echo "PM2 status:"
               pm2 status
             else
               echo "Starting with Node.js directly..."
               nohup node server.js > app.log 2>&1 &
-              echo "Application started with PID: $!"
+              APP_PID=$!
+              echo "Application started with PID: $APP_PID"
+              echo $APP_PID > app.pid
             fi
             
             # Wait for application to start
             echo "Waiting for application to start..."
-            sleep 15
+            sleep 10
             
             # Verify application is responding
             echo "Verifying deployment..."
-            if curl -f http://localhost:5000/api/health > /dev/null 2>&1; then
-              echo "✅ Deployment successful! Application is responding."
-              echo "📊 Application status check:"
-              curl -s http://localhost:5000/api/health | head -5
-            else
+            for i in {1..5}; do
+              if curl -f http://localhost:5000/api/health > /dev/null 2>&1; then
+                echo "✅ Deployment successful! Application is responding."
+                echo "📊 Application status check:"
+                curl -s http://localhost:5000/api/health
+                break
+              else
+                echo "Attempt $i: Application not responding yet, waiting..."
+                sleep 5
+              fi
+            done
+            
+            # Final verification
+            if ! curl -f http://localhost:5000/api/health > /dev/null 2>&1; then
               echo "⚠️  Warning: Application health check failed. Checking logs..."
               if [ -f "app.log" ]; then
                 echo "Recent application logs:"
@@ -123,8 +155,9 @@ jobs:
               fi
               if command -v pm2 >/dev/null 2>&1; then
                 echo "PM2 logs:"
-                pm2 logs --lines 10
+                pm2 logs --lines 10 --nostream
               fi
+              exit 1
             fi
             
             # Show running processes
