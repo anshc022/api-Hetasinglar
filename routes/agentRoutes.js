@@ -832,33 +832,74 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     .sort({ updatedAt: -1 })
     .limit(100); // Limit to recent chats
 
-    // Add active user status and format for frontend
-    const formattedChats = chats.map(chat => ({
-      _id: chat._id,
-      customerId: chat.customerId,
-      escortId: chat.escortId,
-      agentId: chat.agentId,
-      status: chat.status,
-      messages: chat.messages,
-      customerName: chat.customerName,
-      lastCustomerResponse: chat.lastCustomerResponse,
-      lastAgentResponse: chat.lastAgentResponse,
-      requiresFollowUp: chat.requiresFollowUp,
-      followUpDue: chat.followUpDue,
-      reminderHandled: chat.reminderHandled,
-      reminderHandledAt: chat.reminderHandledAt,
-      reminderSnoozedUntil: chat.reminderSnoozedUntil,
-      isInPanicRoom: chat.isInPanicRoom,
-      panicRoomEnteredAt: chat.panicRoomEnteredAt,
-      panicRoomMovedAt: chat.panicRoomEnteredAt, // Add alias for frontend consistency
-      panicRoomReason: chat.panicRoomReason,
-      panicRoomNotes: chat.panicRoomNotes,
-      createdAt: chat.createdAt,
-      updatedAt: chat.updatedAt,
-      isUserActive: false // This would be set by checking active users service
-    }));
+    // Add active user status and format for frontend with enhanced live queue data
+    const formattedChats = chats.map(chat => {
+      // Calculate unread message count
+      const unreadCount = chat.messages.filter(msg => 
+        msg.sender === 'customer' && !msg.readByAgent
+      ).length;
 
-    res.json(formattedChats);
+      // Get last message info
+      const lastMessage = chat.messages.length > 0 ? 
+        chat.messages[chat.messages.length - 1] : null;
+
+      // Calculate priority based on unread count and time
+      let priority = 'normal';
+      if (unreadCount > 5) priority = 'high';
+      else if (unreadCount > 0) priority = 'medium';
+
+      return {
+        _id: chat._id,
+        customerId: chat.customerId,
+        escortId: chat.escortId,
+        agentId: chat.agentId,
+        status: chat.status,
+        messages: chat.messages,
+        customerName: chat.customerName,
+        lastCustomerResponse: chat.lastCustomerResponse,
+        lastAgentResponse: chat.lastAgentResponse,
+        requiresFollowUp: chat.requiresFollowUp,
+        followUpDue: chat.followUpDue,
+        reminderHandled: chat.reminderHandled,
+        reminderHandledAt: chat.reminderHandledAt,
+        reminderSnoozedUntil: chat.reminderSnoozedUntil,
+        // Enhanced live queue data
+        unreadCount,
+        hasNewMessages: unreadCount > 0,
+        priority,
+        lastMessage: lastMessage ? {
+          message: lastMessage.messageType === 'image' ? '📷 Image' : lastMessage.message,
+          messageType: lastMessage.messageType,
+          sender: lastMessage.sender,
+          timestamp: lastMessage.timestamp,
+          readByAgent: lastMessage.readByAgent
+        } : null,
+        isInPanicRoom: chat.isInPanicRoom,
+        panicRoomEnteredAt: chat.panicRoomEnteredAt,
+        panicRoomMovedAt: chat.panicRoomEnteredAt, // Add alias for frontend consistency
+        panicRoomReason: chat.panicRoomReason,
+        panicRoomNotes: chat.panicRoomNotes,
+        createdAt: chat.createdAt,
+        updatedAt: chat.updatedAt,
+        isUserActive: false // This would be set by checking active users service
+      };
+    });
+
+    // Sort chats by priority and last activity (high priority first)
+    const sortedChats = formattedChats.sort((a, b) => {
+      // First sort by priority
+      const priorityOrder = { high: 3, medium: 2, normal: 1 };
+      if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
+        return priorityOrder[b.priority] - priorityOrder[a.priority];
+      }
+      
+      // Then by last customer response time (newest first)
+      const aTime = a.lastCustomerResponse || a.updatedAt;
+      const bTime = b.lastCustomerResponse || b.updatedAt;
+      return new Date(bTime) - new Date(aTime);
+    });
+
+    res.json(sortedChats);
   } catch (error) {
     console.error('Error fetching live queue chats:', error);
     res.status(500).json({ 

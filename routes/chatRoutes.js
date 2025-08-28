@@ -672,6 +672,13 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
 
     chat.messages.push(newMessage);
 
+    // Update chat activity timestamps
+    if (req.agent) {
+      chat.lastAgentResponse = new Date();
+    } else {
+      chat.lastCustomerResponse = new Date();
+    }
+
     // Update chat status if needed
     if (chat.status === 'new') {
       chat.status = 'assigned';
@@ -679,6 +686,45 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
       if (req.agent) {
         chat.agentId = req.agent._id;
       }
+    }
+
+    await chat.save();
+
+    // 🚀 LIVE QUEUE FIX: Notify agents via WebSocket when user sends message
+    if (!req.agent && req.app.locals.wss) {
+      const unreadCount = chat.messages.filter(msg => 
+        msg.sender === 'customer' && !msg.readByAgent
+      ).length;
+
+      const notification = {
+        type: 'live_queue_update',
+        event: 'new_message',
+        chatId: chat._id,
+        customerId: chat.customerId,
+        escortId: chat.escortId,
+        customerName: chat.customerName || 'Anonymous',
+        message: {
+          sender: newMessage.sender,
+          message: newMessage.messageType === 'image' ? '📷 Image' : newMessage.message,
+          messageType: newMessage.messageType,
+          timestamp: newMessage.timestamp
+        },
+        unreadCount,
+        lastActivity: new Date().toISOString(),
+        status: chat.status
+      };
+
+      // Broadcast to all connected agents
+      req.app.locals.wss.clients.forEach(client => {
+        if (client.readyState === 1 && // WebSocket.OPEN
+            client.clientInfo?.role === 'agent') {
+          try {
+            client.send(JSON.stringify(notification));
+          } catch (error) {
+            console.error('Error sending live queue notification:', error);
+          }
+        }
+      });
     }
 
     await chat.save();

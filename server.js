@@ -35,6 +35,9 @@ const wss = new WebSocket.Server({
   verifyClient: (info) => corsConfig.verifyWebSocketClient(info)
 });
 
+// Make WebSocket server accessible to routes
+app.locals.wss = wss;
+
 // CORS middleware for credentialed requests - must use specific origin, not wildcard
 app.use((req, res, next) => {
   const origin = req.headers.origin;
