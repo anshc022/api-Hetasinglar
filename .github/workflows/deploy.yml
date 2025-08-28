@@ -36,6 +36,9 @@ jobs:
           PORT=5000
           NODE_ENV=production
           
+          # Frontend Configuration
+          FRONTEND_URL=https://hetasinglar.vercel.app
+          
           # CORS Configuration
           ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS || 'https://hetasinglar.vercel.app' }}
           EOF
