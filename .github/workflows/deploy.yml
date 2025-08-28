@@ -81,46 +81,55 @@ jobs:
             # Show current directory for debugging
             echo "Current directory: $(pwd)"
             
-            # Fix nginx CORS configuration first
-            echo "🔧 Fixing nginx CORS configuration..."
-            if [ -f "fix-nginx-cors.sh" ]; then
-              chmod +x fix-nginx-cors.sh
-              sudo ./fix-nginx-cors.sh || echo "⚠️ Nginx fix failed, continuing with deployment..."
+            # Stop any existing Node.js processes
+            echo "Stopping existing Node.js processes..."
+            pkill -f "node server.js" || true
+            pkill -f "pm2" || true
+            
+            # Install dependencies
+            echo "Installing dependencies..."
+            npm install --production
+            
+            # Start the application using PM2 (if available) or directly with Node.js
+            echo "Starting application..."
+            if command -v pm2 >/dev/null 2>&1; then
+              echo "Using PM2 to start application..."
+              pm2 stop all || true
+              pm2 start server.js --name "hetasinglar-api" --max-memory-restart 1G
+              pm2 save
+              echo "PM2 status:"
+              pm2 status
+            else
+              echo "Starting with Node.js directly..."
+              nohup node server.js > app.log 2>&1 &
+              echo "Application started with PID: $!"
             fi
             
-            # Stop existing containers gracefully
-            echo "Stopping existing containers..."
-            docker compose down --remove-orphans || true
-            
-            # Remove old images to free up space (optional)
-            echo "Cleaning up old Docker images..."
-            docker image prune -af || true
-            
-            # Build new image with latest code
-            echo "Building Docker image..."
-            docker compose build --no-cache
-            
-            # Start containers in detached mode
-            echo "Starting containers..."
-            docker compose up -d
-            
-            # Show container status
-            echo "Container status:"
-            docker compose ps
-            
-            # Show recent logs for debugging
-            echo "Recent logs:"
-            docker compose logs --tail=20
+            # Wait for application to start
+            echo "Waiting for application to start..."
+            sleep 15
             
             # Verify application is responding
             echo "Verifying deployment..."
-            sleep 10
             if curl -f http://localhost:5000/api/health > /dev/null 2>&1; then
               echo "✅ Deployment successful! Application is responding."
+              echo "📊 Application status check:"
+              curl -s http://localhost:5000/api/health | head -5
             else
-              echo "⚠️  Warning: Application health check failed. Check logs for issues."
-              docker compose logs --tail=50
+              echo "⚠️  Warning: Application health check failed. Checking logs..."
+              if [ -f "app.log" ]; then
+                echo "Recent application logs:"
+                tail -20 app.log
+              fi
+              if command -v pm2 >/dev/null 2>&1; then
+                echo "PM2 logs:"
+                pm2 logs --lines 10
+              fi
             fi
+            
+            # Show running processes
+            echo "Running Node.js processes:"
+            ps aux | grep node | grep -v grep || echo "No Node.js processes found"
 
       # Step 5: Deployment notification (optional)
       - name: Deployment Status
