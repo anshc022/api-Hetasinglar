@@ -33,12 +33,14 @@ const subscriptionPlanSchema = new mongoose.Schema({
   features: {
     type: Map,
     of: Boolean,
-    default: new Map(),
+  // Use a plain object for default to avoid Map default pitfalls in Mongoose
+  default: {},
     required: false
   },
   description: {
     type: String,
-    required: true
+  // Only required for subscription-type plans; coin packages can auto-fill
+  required: function() { return this.type === 'subscription'; }
   },
   isActive: {
     type: Boolean,
@@ -62,11 +64,29 @@ subscriptionPlanSchema.pre('save', function(next) {
 
 // Validate coin package fields
 subscriptionPlanSchema.pre('validate', function(next) {
+  // Basic price check
+  if (this.price == null || this.price <= 0) {
+    this.invalidate('price', 'Price must be greater than 0');
+  }
+
   if (this.type === 'coin_package') {
-    if (!this.coins) {
-      this.invalidate('coins', 'Coins are required for coin packages');
+    // For coin packages, coins must be provided and > 0
+    if (this.coins == null || this.coins <= 0) {
+      this.invalidate('coins', 'Coins are required and must be greater than 0 for coin packages');
+    }
+
+    // Auto-generate a description if not provided
+    if (!this.description) {
+      const bonus = this.bonusCoins ? ` + ${this.bonusCoins} bonus` : '';
+      this.description = `${this.coins || 0} coins${bonus}`;
     }
   }
+  next();
+});
+
+// Keep updatedAt fresh on updates as well
+subscriptionPlanSchema.pre('findOneAndUpdate', function(next) {
+  this.set({ updatedAt: new Date() });
   next();
 });
 

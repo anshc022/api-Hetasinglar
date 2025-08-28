@@ -492,11 +492,62 @@ router.get('/subscription-plans', adminAuth, async (req, res) => {
 
 router.post('/subscription-plans', adminAuth, async (req, res) => {
   try {
-    const plan = new SubscriptionPlan(req.body);
+    // Normalize and validate inputs
+    const {
+      name,
+      type = 'coin_package',
+      price,
+      coins,
+      bonusCoins = 0,
+      features = {},
+  description,
+  isActive
+    } = req.body || {};
+
+    // Basic checks to avoid generic 500s
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ message: 'Name is required' });
+    }
+    if (type !== 'coin_package' && type !== 'subscription') {
+      return res.status(400).json({ message: 'Invalid type. Must be coin_package or subscription' });
+    }
+    if (price == null || Number(price) <= 0) {
+      return res.status(400).json({ message: 'Price must be greater than 0' });
+    }
+    if (type === 'coin_package' && (coins == null || Number(coins) <= 0)) {
+      return res.status(400).json({ message: 'Coins must be greater than 0 for coin packages' });
+    }
+    if (type === 'subscription' && !description) {
+      return res.status(400).json({ message: 'Description is required for subscriptions' });
+    }
+
+    const planData = {
+      name,
+      type,
+      price: Number(price),
+      coins: Number(coins) || 0,
+      bonusCoins: Number(bonusCoins) || 0,
+      features: features || {},
+      description
+    };
+
+    if (typeof isActive === 'boolean') {
+      planData.isActive = isActive;
+    }
+
+    const plan = new SubscriptionPlan(planData);
+
     await plan.save();
     res.status(201).json(plan);
   } catch (error) {
     console.error('Error creating subscription plan:', error);
+    if (error?.name === 'ValidationError') {
+      const details = Object.values(error.errors).map(e => e.message);
+      return res.status(400).json({ message: 'Validation failed', details });
+    }
+    if (error?.code === 11000) {
+      return res.status(400).json({ message: 'A plan with this name already exists' });
+    }
     res.status(500).json({ message: 'Failed to create subscription plan' });
   }
 });
