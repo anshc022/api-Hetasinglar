@@ -1,9 +1,11 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const compression = require('compression');
 const WebSocket = require('ws');
 const http = require('http');
 const corsConfig = require('./config/corsConfig');
+const cacheService = require('./services/cache');
 const { router: authRoutes } = require('./auth');
 const adminRoutes = require('./routes/adminRoutes');
 const agentRoutes = require('./routes/agentRoutes');
@@ -21,9 +23,18 @@ const reminderService = require('./services/reminderService');
 const Chat = require('./models/Chat');
 const Agent = require('./models/Agent');
 const Subscription = require('./models/Subscription');
+const EscortProfile = require('./models/EscortProfile');
 
 const app = express();
 const server = http.createServer(app);
+
+// Make cache service globally available
+global.cacheService = cacheService;
+
+// Performance optimizations
+app.use(compression()); // Enable gzip compression
+app.set('trust proxy', 1); // Trust first proxy for performance
+app.disable('x-powered-by'); // Remove Express signature for security
 
 // CORS Configuration
 console.log('🌐 CORS Configuration:');
@@ -41,14 +52,20 @@ app.locals.wss = wss;
 // CORS middleware for credentialed requests - must use specific origin, not wildcard
 app.use((req, res, next) => {
   const origin = req.headers.origin;
+  const allowedOrigins = corsConfig.getAllowedOrigins();
   
-  // Set specific origin for credentialed requests
-  if (origin === 'https://hetasinglar.vercel.app') {
-    res.setHeader('Access-Control-Allow-Origin', 'https://hetasinglar.vercel.app');
+  // Set specific origin for credentialed requests if it's in our allowed list
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-  } else {
-    // For non-credentialed requests from other origins, allow wildcard
+  } else if (!origin) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
     res.setHeader('Access-Control-Allow-Origin', '*');
+  } else {
+    // For unknown origins, deny access
+    console.log('🚫 CORS blocked origin:', origin);
+    console.log('🔍 Allowed origins:', allowedOrigins);
+    res.setHeader('Access-Control-Allow-Origin', '');
   }
   
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
@@ -61,8 +78,43 @@ app.use((req, res, next) => {
   
   next();
 });
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ limit: '5mb', extended: true }));
+
+// Optimized body parsing with performance settings
+app.use(express.json({ 
+  limit: '5mb',
+  verify: (req, res, buf) => {
+    // Pre-parse optimization - only for small payloads
+    if (buf.length < 1000) {
+      req.rawBody = buf;
+    }
+  }
+}));
+app.use(express.urlencoded({ 
+  limit: '5mb', 
+  extended: true,
+  parameterLimit: 1000 // Limit parameters for security and performance
+}));
+
+// Add response time header for monitoring (fixed version)
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    if (duration > 1000) {
+      console.log(`⚠️  Slow request: ${req.method} ${req.path} took ${duration}ms`);
+    }
+  });
+  next();
+});
+
+// Add global caching for specific endpoints
+app.use(cacheService.middleware([
+  '/agents/dashboard',
+  '/agents/my-escorts', 
+  '/health',
+  '/status'
+], 120000)); // 2 minute cache
+
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/agents', agentRoutes);
@@ -74,8 +126,11 @@ app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/logs', logRoutes); // Add logs API routes
 app.use('/api/first-contact', firstContactRoutes); // Add first contact API routes
 
-// Health check endpoint
+// Health check endpoint with caching
 app.get('/api/health', (req, res) => {
+  // Cache health check for 30 seconds
+  res.set('Cache-Control', 'public, max-age=30');
+  
   const healthStatus = {
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -93,6 +148,15 @@ app.get('/api/health', (req, res) => {
   
   console.log('🟢 API Health Check:', healthStatus.timestamp);
   res.json(healthStatus);
+});
+
+// Cache statistics endpoint (for debugging)
+app.get('/api/cache-stats', (req, res) => {
+  res.set('Cache-Control', 'no-cache');
+  res.json({
+    cache: cacheService.getStats(),
+    timestamp: new Date().toISOString()
+  });
 });
 
 // CORS Test endpoint
@@ -138,7 +202,14 @@ app.get('/api/status', (req, res) => {
 
 mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3sfyYCq@dating.flel6.mongodb.net/hetasinglar?retryWrites=true&w=majority', {
   useNewUrlParser: true,
-  useUnifiedTopology: true
+  useUnifiedTopology: true,
+  // Performance optimizations (updated for latest mongoose)
+  maxPoolSize: 10, // Maintain up to 10 socket connections
+  serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+  socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+  // Additional performance settings
+  maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
+  family: 4 // Use IPv4, skip trying IPv6
 }).then(async () => {
   console.log('🟢 MongoDB connected successfully');
   console.log('📊 Database Status: Connected');
@@ -148,6 +219,23 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3
   // Start the reminder service
   reminderService.start(30); // Check every 30 minutes
   console.log('⏰ Reminder service started');
+
+  // Warm-up: Prefetch public escorts list into cache to reduce first-hit latency
+  try {
+    const cacheKey = 'escorts:active:all';
+    const existing = cacheService.get(cacheKey);
+    if (!existing) {
+      console.log('🔥 Warming up escorts cache...');
+      const profiles = await EscortProfile.find({ status: 'active' })
+        .select('username firstName gender profileImage profilePicture imageUrl country region status createdAt')
+        .sort({ createdAt: -1 })
+        .lean();
+      cacheService.set(cacheKey, profiles, 120000);
+      console.log(`✅ Warmed escorts cache with ${profiles.length} profiles`);
+    }
+  } catch (warmErr) {
+    console.log('⚠️  Escorts cache warm-up failed:', warmErr.message);
+  }
   console.log('🔄 System initialization complete');
 }).catch(err => {
   console.error('🔴 MongoDB connection error:', err);

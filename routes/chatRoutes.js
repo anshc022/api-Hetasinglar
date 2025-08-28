@@ -9,6 +9,7 @@ const User = require('../models/User');
 const Earnings = require('../models/Earnings');
 const { auth } = require('../auth');
 const ActiveUsersService = require('../services/activeUsers');
+const cache = require('../services/cache'); // Global cache service
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
@@ -65,7 +66,7 @@ const upload = multer({
 const COINS_PER_MESSAGE = 5;
 const COST_PER_CREDIT = 0.10; // $0.10 per credit
 
-// Add message limit middleware
+// Add message limit middleware - OPTIMIZED
 const checkMessageLimit = async (req, res, next) => {
   if (req.agent) {
     return next(); // Agents can always send messages
@@ -77,24 +78,25 @@ const checkMessageLimit = async (req, res, next) => {
   }
 
   try {
-    const user = await User.findById(req.user.id);
+    // Use lean query for performance and only select needed fields
+    const user = await User.findById(req.user.id).select('coins').lean();
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     // Check if user has enough coins
     const COINS_PER_MESSAGE = 1;
-    if (!user || user.coins.balance < COINS_PER_MESSAGE) {
-      // Get available coin packages
+    if (user.coins.balance < COINS_PER_MESSAGE) {
+      // Get available coin packages (use lean for performance)
       const coinPackages = await SubscriptionPlan.find({
         type: 'coin_package',
         isActive: true
-      }).sort({ price: 1 }); // Sort by price ascending
+      }).select('name price coins bonusCoins').sort({ price: 1 }).lean();
 
       return res.status(403).json({ 
         message: 'Insufficient coins. Please purchase a coin package to continue chatting.',
         type: 'INSUFFICIENT_COINS',
-        userCoins: user ? user.coins.balance : 0,
+        userCoins: user.coins.balance,
         coinsRequired: COINS_PER_MESSAGE,
         availablePackages: coinPackages.map(pkg => ({
           id: pkg._id,
@@ -107,9 +109,11 @@ const checkMessageLimit = async (req, res, next) => {
       });
     }
 
-    req.userForCoins = user;
+    // Pass user data to route to avoid duplicate queries
+    req.userCoins = user.coins;
     next();
   } catch (error) {
+    console.error('Error checking message limit:', error);
     res.status(500).json({ message: 'Error checking message limit' });
   }
 };
@@ -171,7 +175,7 @@ const recordEarnings = async (userId, chatId, agentId, coinsUsed, messageType = 
           customerId: userId
         });
         if (affiliateReg) {
-          await affiliateReg.updateCommission(earning.affiliateCommission.amount, coinsUsed);
+          await affiliateReg.updateCommission(earning.affiliateCommission, coinsUsed);
         }
       }
     }
@@ -180,7 +184,7 @@ const recordEarnings = async (userId, chatId, agentId, coinsUsed, messageType = 
     const AgentCustomer = require('../models/AgentCustomer');
     const agentCustomer = await AgentCustomer.findOne({ agentId, customerId: userId });
     if (agentCustomer) {
-      await agentCustomer.updateStats(earning.chatAgentCommission.amount, coinsUsed);
+      await agentCustomer.updateStats(earning.agentCommission, coinsUsed);
     }
 
     return earning;
@@ -192,8 +196,146 @@ const recordEarnings = async (userId, chatId, agentId, coinsUsed, messageType = 
 
 router.use(auth);
 
+// Chat notes (agent-only)
+router.get('/:chatId/notes', async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return res.status(400).json({ message: 'Invalid chat ID' });
+    }
+    const chat = await Chat.findById(chatId).select('comments');
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+    const notes = (chat.comments || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    res.json(notes);
+  } catch (error) {
+    console.error('Get chat notes error:', error);
+    res.status(500).json({ message: 'Failed to fetch chat notes' });
+  }
+});
+
+router.post('/:chatId/notes', async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const { text } = req.body || {};
+    if (!req.agent) {
+      return res.status(403).json({ message: 'Agent authentication required' });
+    }
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ message: 'Note text is required' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return res.status(400).json({ message: 'Invalid chat ID' });
+    }
+    const chat = await Chat.findById(chatId);
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+    const note = {
+      text,
+      timestamp: new Date(),
+      agentId: req.agent._id,
+      agentName: req.agent.name || 'Agent'
+    };
+    chat.comments = chat.comments || [];
+    chat.comments.push(note);
+    await chat.save();
+    const created = chat.comments[chat.comments.length - 1];
+    res.status(201).json(created);
+  } catch (error) {
+    console.error('Add chat note error:', error);
+    res.status(500).json({ message: 'Failed to add chat note' });
+  }
+});
+
+router.delete('/:chatId/notes/:noteId', async (req, res) => {
+  try {
+    const { chatId, noteId } = req.params;
+    if (!req.agent) {
+      return res.status(403).json({ message: 'Agent authentication required' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(chatId) || !mongoose.Types.ObjectId.isValid(noteId)) {
+      return res.status(400).json({ message: 'Invalid ID format' });
+    }
+    const chat = await Chat.findById(chatId);
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+    const before = chat.comments?.length || 0;
+    chat.comments = (chat.comments || []).filter(n => n._id.toString() !== noteId);
+    if (chat.comments.length === before) {
+      return res.status(404).json({ message: 'Note not found' });
+    }
+    await chat.save();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete chat note error:', error);
+    res.status(500).json({ message: 'Failed to delete chat note' });
+  }
+});
+
+// Message-level note (single note per message)
+router.post('/:chatId/messages/:messageIndex/note', async (req, res) => {
+  try {
+    const { chatId, messageIndex } = req.params;
+    const { text } = req.body || {};
+    if (!req.agent) {
+      return res.status(403).json({ message: 'Agent authentication required' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return res.status(400).json({ message: 'Invalid chat ID' });
+    }
+    const idx = parseInt(messageIndex, 10);
+    if (Number.isNaN(idx) || idx < 0) {
+      return res.status(400).json({ message: 'Invalid message index' });
+    }
+    const chat = await Chat.findById(chatId);
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+    if (!chat.messages || idx >= chat.messages.length) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+    chat.messages[idx].note = {
+      text,
+      timestamp: new Date(),
+      agentId: req.agent._id,
+      agentName: req.agent.name || 'Agent'
+    };
+    chat.markModified('messages');
+    await chat.save();
+    res.status(201).json(chat.messages[idx].note);
+  } catch (error) {
+    console.error('Add message note error:', error);
+    res.status(500).json({ message: 'Failed to add message note' });
+  }
+});
+
+router.delete('/:chatId/messages/:messageIndex/note', async (req, res) => {
+  try {
+    const { chatId, messageIndex } = req.params;
+    if (!req.agent) {
+      return res.status(403).json({ message: 'Agent authentication required' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return res.status(400).json({ message: 'Invalid chat ID' });
+    }
+    const idx = parseInt(messageIndex, 10);
+    if (Number.isNaN(idx) || idx < 0) {
+      return res.status(400).json({ message: 'Invalid message index' });
+    }
+    const chat = await Chat.findById(chatId);
+    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+    if (!chat.messages || idx >= chat.messages.length) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+    chat.messages[idx].note = undefined;
+    chat.markModified('messages');
+    await chat.save();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete message note error:', error);
+    res.status(500).json({ message: 'Failed to delete message note' });
+  }
+});
+
 // Watch live queue
 router.get('/live-queue/:escortId?/:chatId?', async (req, res) => {
+  // This route is deprecated for agent dashboard. Use /api/agents/chats/live-queue instead.
+  console.warn('⚠️  DEPRECATED: /api/chats/live-queue was called. Frontend should use /api/agents/chats/live-queue');
   try {
     const { escortId, chatId } = req.params;
     
@@ -476,27 +618,38 @@ router.get('/user', async (req, res) => {
       return res.status(401).json({ message: 'User not authenticated' });
     }
 
-    const chats = await Chat.find({
-      customerId: req.user.id,
-      status: { $ne: 'closed' }
-    })
-    .populate('escortId', 'firstName profileImage')
-    .sort({ updatedAt: -1 });
-
-    // Group chats by escort
-    const chatsByEscort = chats.reduce((acc, chat) => {
-      if (!acc[chat.escortId._id]) {
-        acc[chat.escortId._id] = {
-          escortId: chat.escortId._id,
-          escortName: chat.escortId?.firstName || 'Escort',
-          profileImage: chat.escortId?.profileImage,
-          chats: []
-        };
-      }
+    // Check cache first
+    const cacheKey = `user:chats:${req.user.id}`;
+    let formattedResponse = await cache.get(cacheKey);
+    
+    if (!formattedResponse) {
+      console.log('Cache miss - fetching user chats from database');
       
-      acc[chat.escortId._id].chats.push({
-        id: chat._id,
-        messages: chat.messages.map(msg => ({
+      // Use lean query with populate for better performance
+      const chats = await Chat.find({
+        customerId: req.user.id,
+        status: { $ne: 'closed' }
+      })
+      .populate('escortId', 'firstName profileImage')
+      .sort({ updatedAt: -1 })
+      .lean(); // Convert to plain JavaScript objects
+      
+      // Group chats by escort (optimized processing)
+      const chatsByEscort = chats.reduce((acc, chat) => {
+        const escortId = chat.escortId?._id || chat.escortId;
+        const escortIdStr = escortId.toString();
+        
+        if (!acc[escortIdStr]) {
+          acc[escortIdStr] = {
+            escortId: escortId,
+            escortName: chat.escortId?.firstName || 'Escort',
+            profileImage: chat.escortId?.profileImage,
+            chats: []
+          };
+        }
+        
+        // Optimized message processing
+        const processedMessages = chat.messages.map(msg => ({
           text: msg.message,
           time: new Date(msg.timestamp).toLocaleString(),
           isSent: msg.sender === 'customer',
@@ -508,16 +661,28 @@ router.get('/user', async (req, res) => {
           filename: msg.filename,
           readByAgent: msg.readByAgent,
           readByCustomer: msg.readByCustomer
-        })),
-        isOnline: true,
-        lastMessage: chat.messages[chat.messages.length - 1]?.message || '',
-        time: new Date(chat.updatedAt).toLocaleString()
-      });
+        }));
+        
+        acc[escortIdStr].chats.push({
+          id: chat._id,
+          messages: processedMessages,
+          isOnline: true,
+          lastMessage: chat.messages[chat.messages.length - 1]?.message || '',
+          time: new Date(chat.updatedAt).toLocaleString()
+        });
 
-      return acc;
-    }, {});
+        return acc;
+      }, {});
 
-    const formattedResponse = Object.values(chatsByEscort);
+      formattedResponse = Object.values(chatsByEscort);
+      
+  // Cache for 30 seconds (shorter for user-specific data)
+  await cache.set(cacheKey, formattedResponse, 30 * 1000);
+      console.log(`Cached chats for user ${req.user.id}: ${formattedResponse.length} escorts`);
+    } else {
+      console.log(`Cache hit - returning chats for user ${req.user.id}`);
+    }
+
     res.json(formattedResponse);
   } catch (error) {
     console.error('Error fetching user chats:', error);
@@ -575,8 +740,10 @@ router.get('/user/escort/:escortId', async (req, res) => {
   }
 });
 
-// Send a message in chat
+// Send a message in chat - OPTIMIZED
 router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
+  const startTime = Date.now();
+  
   try {
     const { chatId } = req.params;
     const { message, messageType = 'text', imageData, mimeType, filename } = req.body;
@@ -586,74 +753,33 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
       return res.status(400).json({ message: 'Message content is required and must be a non-empty string' });
     }
     
-    // Find chat and validate
-    const chat = await Chat.findById(chatId);
+    // Find chat and validate with lean query for performance
+    const chat = await Chat.findById(chatId).lean();
     if (!chat) {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
     let user; // Declare user here to be accessible in the whole try block
+    let coinDeduction = false;
 
-    // If user is customer, deduct coins
+    // If user is customer, prepare for coin deduction (already validated in middleware)
     if (!req.agent) {
       const COINS_PER_MESSAGE = 1;
-      user = await User.findById(req.user.id);
       
-      // Add a check to ensure user was found
-      if (!user) {
-        return res.status(404).json({ message: 'User sending message not found' });
-      }
-      
-      // Double check coin balance
-      if (user.coins.balance < COINS_PER_MESSAGE) {
-        // Get available coin packages for user to purchase
-        const coinPackages = await SubscriptionPlan.find({
-          type: 'coin_package',
-          isActive: true
-        }).sort({ price: 1 });
-
+      // Double check coin balance (should already be validated by middleware)
+      if (req.userCoins.balance < COINS_PER_MESSAGE) {
         return res.status(403).json({ 
           message: 'Insufficient coins. Please purchase a coin package to continue chatting.',
           type: 'INSUFFICIENT_COINS',
-          userCoins: user.coins.balance,
-          coinsRequired: COINS_PER_MESSAGE,
-          availablePackages: coinPackages.map(pkg => ({
-            id: pkg._id,
-            name: pkg.name,
-            price: pkg.price,
-            coins: pkg.coins,
-            bonusCoins: pkg.bonusCoins,
-            totalCoins: pkg.coins + pkg.bonusCoins
-          }))
+          userCoins: req.userCoins.balance,
+          coinsRequired: COINS_PER_MESSAGE
         });
       }
 
-      // Deduct coins and record usage
-      user.coins.balance -= COINS_PER_MESSAGE;
-      user.coins.totalUsed += COINS_PER_MESSAGE;
-      user.coins.lastUsageDate = new Date();
-      user.coins.usageHistory.push({
-        date: new Date(),
-        amount: COINS_PER_MESSAGE,
-        chatId: chat._id,
-        messageType
-      });
-
-      await user.save();
-
-      // Record earnings for agent commission
-      if (chat.agentId) {
-        await recordEarnings(
-          user._id,
-          chat._id,
-          chat.agentId,
-          COINS_PER_MESSAGE,
-          messageType
-        );
-      }
+      coinDeduction = true;
     }
 
-    // Add message to chat
+    // Add message to chat - Use atomic operation
     const newMessage = {
       sender: req.agent ? 'agent' : 'customer',
       message,
@@ -670,72 +796,167 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
       newMessage.filename = filename;
     }
 
-    chat.messages.push(newMessage);
+    // Prepare update operations
+    const chatUpdate = {
+      $push: { messages: newMessage },
+      $set: {
+        updatedAt: new Date()
+      }
+    };
 
     // Update chat activity timestamps
     if (req.agent) {
-      chat.lastAgentResponse = new Date();
+      chatUpdate.$set.lastAgentResponse = new Date();
     } else {
-      chat.lastCustomerResponse = new Date();
+      chatUpdate.$set.lastCustomerResponse = new Date();
     }
 
     // Update chat status if needed
     if (chat.status === 'new') {
-      chat.status = 'assigned';
+      chatUpdate.$set.status = 'assigned';
       // If agent is sending the message, assign them to the chat
       if (req.agent) {
-        chat.agentId = req.agent._id;
+        chatUpdate.$set.agentId = req.agent._id;
       }
     }
 
-    await chat.save();
+    // Execute chat update and coin deduction in parallel for performance
+    const operations = [
+      Chat.findByIdAndUpdate(chatId, chatUpdate, { new: false })
+    ];
 
-    // 🚀 LIVE QUEUE FIX: Notify agents via WebSocket when user sends message
-    if (!req.agent && req.app.locals.wss) {
-      const unreadCount = chat.messages.filter(msg => 
-        msg.sender === 'customer' && !msg.readByAgent
-      ).length;
-
-      const notification = {
-        type: 'live_queue_update',
-        event: 'new_message',
-        chatId: chat._id,
-        customerId: chat.customerId,
-        escortId: chat.escortId,
-        customerName: chat.customerName || 'Anonymous',
-        message: {
-          sender: newMessage.sender,
-          message: newMessage.messageType === 'image' ? '📷 Image' : newMessage.message,
-          messageType: newMessage.messageType,
-          timestamp: newMessage.timestamp
-        },
-        unreadCount,
-        lastActivity: new Date().toISOString(),
-        status: chat.status
-      };
-
-      // Broadcast to all connected agents
-      req.app.locals.wss.clients.forEach(client => {
-        if (client.readyState === 1 && // WebSocket.OPEN
-            client.clientInfo?.role === 'agent') {
-          try {
-            client.send(JSON.stringify(notification));
-          } catch (error) {
-            console.error('Error sending live queue notification:', error);
-          }
-        }
-      });
+    if (coinDeduction) {
+      operations.push(
+        User.findByIdAndUpdate(
+          req.user.id,
+          {
+            $inc: { 
+              'coins.balance': -1,
+              'coins.totalUsed': 1
+            },
+            $set: {
+              'coins.lastUsageDate': new Date()
+            },
+            $push: {
+              'coins.usageHistory': {
+                date: new Date(),
+                amount: 1,
+                chatId: chat._id,
+                messageType
+              }
+            }
+          },
+          { new: true, select: 'coins' }
+        )
+      );
     }
 
-    await chat.save();
+    const results = await Promise.all(operations);
+    const updatedChat = results[0];
+    const updatedUser = coinDeduction ? results[1] : null;
 
-    // Return formatted response with coin info if user is customer
+    // 🚀 ASYNC OPTIMIZATIONS: Move heavy operations to background
+    setImmediate(async () => {
+      try {
+        // Invalidate relevant caches after message is sent
+        const cacheKeys = [
+          `live_queue_updates:${req.user?.id || 'all'}`,
+          `live_queue:${chat.escortId || 'all'}`,
+          `live_queue:${chat.escortId}:${chat.agentId}`, // Escort-specific live queue
+          `my_escorts:${chat.agentId}`, // Agent's escorts list
+          `chat_${chatId}`,
+          `user:chats:${chat.customerId}` // User's chats cache
+        ];
+        cacheKeys.forEach(key => cache.delete(key));
+
+        // Record earnings for agent commission (background operation)
+        if (coinDeduction && chat.agentId) {
+          await recordEarnings(
+            req.user.id,
+            chat._id,
+            chat.agentId,
+            1,
+            messageType
+          );
+        }
+
+        // WebSocket notifications (background operation)
+        if (req.app.locals.wss) {
+          const unreadCount = (chat.messages || []).filter(msg => 
+            msg.sender === 'customer' && !msg.readByAgent
+          ).length + (req.agent ? 0 : 1);
+
+          if (!req.agent) {
+            // Send live queue update notification
+            const liveQueueNotification = {
+              type: 'live_queue_update',
+              event: 'new_message',
+              chatId: chat._id,
+              customerId: chat.customerId,
+              escortId: chat.escortId,
+              customerName: chat.customerName || 'Anonymous',
+              message: {
+                sender: newMessage.sender,
+                message: newMessage.messageType === 'image' ? '📷 Image' : newMessage.message,
+                messageType: newMessage.messageType,
+                timestamp: newMessage.timestamp
+              },
+              unreadCount,
+              lastActivity: new Date().toISOString(),
+              status: chatUpdate.$set.status || chat.status
+            };
+
+            // Broadcast live queue updates
+            req.app.locals.wss.clients.forEach(client => {
+              if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
+                try {
+                  client.send(JSON.stringify(liveQueueNotification));
+                } catch (error) {
+                  console.error('Error sending live queue notification:', error);
+                }
+              }
+            });
+            console.log(`📡 Sent WebSocket notifications for chat ${chat._id} to agent`);
+          }
+
+          // Send chat message notification for real-time chat updates
+          const chatMessageNotification = {
+            type: 'chat_message',
+            chatId: chat._id,
+            sender: newMessage.sender,
+            message: newMessage.message,
+            messageType: newMessage.messageType,
+            timestamp: newMessage.timestamp,
+            readByAgent: newMessage.readByAgent,
+            readByCustomer: newMessage.readByCustomer,
+            imageData: messageType === 'image' ? imageData : undefined,
+            mimeType: messageType === 'image' ? mimeType : undefined,
+            filename: messageType === 'image' ? filename : undefined
+          };
+
+          // Broadcast to all connected agents
+          req.app.locals.wss.clients.forEach(client => {
+            if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
+              try {
+                client.send(JSON.stringify(chatMessageNotification));
+              } catch (error) {
+                console.error('Error sending chat message notification:', error);
+              }
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Background operations error:', error);
+      }
+    });
+
+    // Return formatted response immediately
     const response = {
       id: chat._id,
       message,
       messageType,
       sender: req.agent ? 'agent' : 'customer',
-      timestamp: new Date().toISOString()
+      timestamp: newMessage.timestamp.toISOString()
     };
 
     // Include image data in response if it's an image message
@@ -745,11 +966,16 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
       response.filename = filename;
     }
 
-    if (!req.agent && user) {
+    if (updatedUser) {
       response.coinInfo = {
         used: 1,
-        remaining: user.coins.balance
+        remaining: updatedUser.coins.balance
       };
+    }
+
+    const responseTime = Date.now() - startTime;
+    if (responseTime > 500) {
+      console.log(`⚠️ Slow message send: ${responseTime}ms`);
     }
 
     res.json(response);
@@ -1288,92 +1514,217 @@ router.get('/export-stats', auth, async (req, res) => {
   }
 });
 
-// Live queue updates for agent dashboard
+// Live queue updates for agent dashboard - OPTIMIZED
 router.get('/live-queue-updates', auth, async (req, res) => {
+  const startTime = Date.now();
+  
   try {
-    // Get all chats that should appear in live queue
-    const query = {
-      status: { $in: ['new', 'assigned'] },
-      $or: [
-        { pushBackUntil: { $exists: false } },
-        { pushBackUntil: { $lt: new Date() } }
-      ]
-    };
+    // Check cache first for ultra-fast response
+    const cacheKey = `live_queue_updates:${req.user?.id || 'all'}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log(`🚀 Cache HIT: live-queue-updates (${Date.now() - startTime}ms)`);
+      return res.json(cached);
+    }
 
-    const chats = await Chat.find(query)
-      .populate('customerId', 'username email dateOfBirth sex createdAt coins lastActiveDate')
-      .populate('escortId', 'firstName gender profileImage country region relationshipStatus interests profession height dateOfBirth')
-      .sort({ createdAt: -1 });
-
-    const liveQueueData = chats.map(chat => {
-      const unreadCount = chat.messages.filter(msg => 
-        msg.sender === 'customer' && !msg.readByAgent
-      ).length;
-
-      const isUserActive = ActiveUsersService.isUserActive(chat.customerId?._id.toString());
-      
-      // Get last message read status
-      const lastMessage = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
-      const hasUnreadAgentMessages = chat.messages.filter(msg => 
-        msg.sender === 'agent' && !msg.readByCustomer
-      ).length > 0;
-
-      // Calculate follow-up requirements
-      const requiresFollowUp = chat.requiresFollowUp && chat.followUpDue && new Date(chat.followUpDue) <= new Date();
-
-      return {
-        chatId: chat._id,
-        customerId: chat.customerId?._id,
-        customerName: chat.customerId?.username || chat.customerName,
-        escortId: chat.escortId?._id,
-        escortName: chat.escortId?.firstName || chat.escortName,
-        status: chat.status,
-        createdAt: chat.createdAt,
-        updatedAt: chat.updatedAt,
-        lastActive: chat.customerId?.lastActiveDate || chat.updatedAt,
-        unreadCount,
-        isUserActive,
-        isInPanicRoom: chat.isInPanicRoom || false,
-        panicRoomReason: chat.panicRoomReason,
-        panicRoomMovedAt: chat.panicRoomMovedAt,
-        requiresFollowUp,
-        followUpDue: chat.followUpDue,
-        lastMessage: lastMessage ? {
-          message: lastMessage.messageType === 'image' ? '📷 Image' : lastMessage.message,
-          messageType: lastMessage.messageType,
-          sender: lastMessage.sender,
-          timestamp: lastMessage.timestamp,
-          readByAgent: lastMessage.readByAgent,
-          readByCustomer: lastMessage.readByCustomer
-        } : null,
-        hasUnreadAgentMessages,
-        // Presence data
-        presence: {
-          isOnline: isUserActive,
-          lastSeen: chat.customerId?.lastActiveDate || chat.updatedAt,
-          status: isUserActive ? 'online' : 'offline'
+    // Use aggregation pipeline for maximum performance
+    const liveQueueData = await Chat.aggregate([
+      // Stage 1: Match only relevant chats
+      {
+        $match: {
+          status: { $in: ['new', 'assigned'] },
+          $or: [
+            { pushBackUntil: { $exists: false } },
+            { pushBackUntil: { $lt: new Date() } }
+          ]
         }
-      };
+      },
+      
+      // Stage 2: Lookup customer data efficiently
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'customerId',
+          foreignField: '_id',
+          as: 'customer',
+          pipeline: [
+            { 
+              $project: { 
+                username: 1, 
+                email: 1, 
+                lastActiveDate: 1, 
+                coins: 1, 
+                createdAt: 1 
+              } 
+            }
+          ]
+        }
+      },
+      
+      // Stage 3: Lookup escort data efficiently
+      {
+        $lookup: {
+          from: 'escortprofiles',
+          localField: 'escortId',
+          foreignField: '_id',
+          as: 'escort',
+          pipeline: [
+            { 
+              $project: { 
+                firstName: 1, 
+                profileImage: 1, 
+                country: 1 
+              } 
+            }
+          ]
+        }
+      },
+      
+      // Stage 4: Calculate metrics in a single stage
+      {
+        $addFields: {
+          customer: { $arrayElemAt: ['$customer', 0] },
+          escort: { $arrayElemAt: ['$escort', 0] },
+          unreadCount: {
+            $size: {
+              $filter: {
+                input: '$messages',
+                cond: {
+                  $and: [
+                    { $eq: ['$$this.sender', 'customer'] },
+                    { $eq: ['$$this.readByAgent', false] }
+                  ]
+                }
+              }
+            }
+          },
+          hasUnreadAgentMessages: {
+            $gt: [
+              {
+                $size: {
+                  $filter: {
+                    input: '$messages',
+                    cond: {
+                      $and: [
+                        { $eq: ['$$this.sender', 'agent'] },
+                        { $eq: ['$$this.readByCustomer', false] }
+                      ]
+                    }
+                  }
+                }
+              },
+              0
+            ]
+          },
+          lastMessage: { $arrayElemAt: ['$messages', -1] },
+          requiresFollowUp: {
+            $and: [
+              { $eq: ['$requiresFollowUp', true] },
+              { $lte: ['$followUpDue', new Date()] }
+            ]
+          }
+        }
+      },
+      
+      // Stage 5: Project final structure
+      {
+        $project: {
+          chatId: '$_id',
+          customerId: '$customer._id',
+          customerName: { $ifNull: ['$customer.username', '$customerName'] },
+          escortId: '$escort._id',
+          escortName: { $ifNull: ['$escort.firstName', '$escortName'] },
+          status: 1,
+          createdAt: 1,
+          updatedAt: 1,
+          lastActive: { $ifNull: ['$customer.lastActiveDate', '$updatedAt'] },
+          unreadCount: 1,
+          isUserActive: { $literal: false }, // Will be set by presence service
+          isInPanicRoom: { $ifNull: ['$isInPanicRoom', false] },
+          panicRoomReason: 1,
+          panicRoomMovedAt: 1,
+          requiresFollowUp: 1,
+          followUpDue: 1,
+          lastMessage: {
+            $cond: [
+              { $ne: ['$lastMessage', null] },
+              {
+                message: {
+                  $cond: [
+                    { $eq: ['$lastMessage.messageType', 'image'] },
+                    '📷 Image',
+                    '$lastMessage.message'
+                  ]
+                },
+                messageType: '$lastMessage.messageType',
+                sender: '$lastMessage.sender',
+                timestamp: '$lastMessage.timestamp',
+                readByAgent: '$lastMessage.readByAgent',
+                readByCustomer: '$lastMessage.readByCustomer'
+              },
+              null
+            ]
+          },
+          hasUnreadAgentMessages: 1,
+          presence: {
+            isOnline: { $literal: false }, // Will be updated by presence service
+            lastSeen: { $ifNull: ['$customer.lastActiveDate', '$updatedAt'] },
+            status: { $literal: 'offline' }
+          }
+        }
+      },
+      
+      // Stage 6: Sort efficiently
+      {
+        $sort: {
+          unreadCount: -1,
+          updatedAt: -1
+        }
+      },
+      
+      // Stage 7: Limit results for performance
+      {
+        $limit: 50
+      }
+    ]);
+
+    // Get active users in batch for presence data
+    const activeUsers = global.activeUsersService ? 
+      await global.activeUsersService.getAllActiveUsers() : new Set();
+
+    // Update presence data efficiently
+    liveQueueData.forEach(chat => {
+      const isActive = activeUsers.has(chat.customerId?.toString());
+      chat.isUserActive = isActive;
+      chat.presence.isOnline = isActive;
+      chat.presence.status = isActive ? 'online' : 'offline';
     });
 
-    // Also get active users count for stats
-    const activeUsersCount = ActiveUsersService.getActiveUsers().size;
-
-    res.json({
+    // Build response with metadata
+    const response = {
       liveQueue: liveQueueData,
       metadata: {
         totalChats: liveQueueData.length,
-        activeUsers: activeUsersCount,
+        activeUsers: activeUsers.size,
         panicRoomCount: liveQueueData.filter(chat => chat.isInPanicRoom).length,
-        followUpCount: liveQueueData.filter(chat => chat.requiresFollowUp).length,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        responseTime: Date.now() - startTime
       }
-    });
+    };
+
+    // Cache the result for 30 seconds (live data)
+    cache.set(cacheKey, response, 30 * 1000);
+    
+    console.log(`⚡ Live queue updates generated in ${Date.now() - startTime}ms`);
+    res.json(response);
+
   } catch (error) {
     console.error('Error fetching live queue updates:', error);
+    console.log(`❌ Live queue updates failed in ${Date.now() - startTime}ms`);
     res.status(500).json({ 
       message: 'Failed to fetch live queue updates',
-      error: error.message 
+      error: error.message,
+      responseTime: Date.now() - startTime
     });
   }
 });
@@ -1747,10 +2098,10 @@ router.put('/:chatId/message/:messageId', auth, async (req, res) => {
   }
 });
 
-// Delete message endpoint - for both agents and users
-router.delete('/:chatId/message/:messageId', auth, async (req, res) => {
+// Delete message endpoint - handles both ID and index
+router.delete('/:chatId/message/:messageIdOrIndex', auth, async (req, res) => {
   try {
-    const { chatId, messageId } = req.params;
+    const { chatId, messageIdOrIndex } = req.params;
     
     // Find chat
     const chat = await Chat.findById(chatId);
@@ -1758,13 +2109,25 @@ router.delete('/:chatId/message/:messageId', auth, async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
     
-    // Find the message
-    const messageIndex = chat.messages.findIndex(msg => msg._id.toString() === messageId);
-    if (messageIndex === -1) {
-      return res.status(404).json({ message: 'Message not found' });
-    }
+    let messageToDelete;
+    let messageIndex;
     
-    const messageToDelete = chat.messages[messageIndex];
+    // Check if it's a numeric index or MongoDB ObjectId
+    if (/^\d+$/.test(messageIdOrIndex)) {
+      // It's a numeric index
+      messageIndex = parseInt(messageIdOrIndex);
+      if (messageIndex < 0 || messageIndex >= chat.messages.length) {
+        return res.status(404).json({ message: 'Message not found at specified index' });
+      }
+      messageToDelete = chat.messages[messageIndex];
+    } else {
+      // It's a MongoDB ObjectId
+      messageIndex = chat.messages.findIndex(msg => msg._id.toString() === messageIdOrIndex);
+      if (messageIndex === -1) {
+        return res.status(404).json({ message: 'Message not found' });
+      }
+      messageToDelete = chat.messages[messageIndex];
+    }
     
     // Check if user can delete this message
     if (req.agent) {
@@ -1791,10 +2154,33 @@ router.delete('/:chatId/message/:messageId', auth, async (req, res) => {
     
     await chat.save();
     
+    // Send WebSocket notification for real-time updates
+    if (req.app.locals.wss) {
+      const notification = {
+        type: 'message_deleted',
+        chatId: chat._id,
+        messageIndex: messageIndex,
+        messageId: messageToDelete._id,
+        sender: messageToDelete.sender,
+        timestamp: new Date().toISOString()
+      };
+
+      req.app.locals.wss.clients.forEach(client => {
+        if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
+          try {
+            client.send(JSON.stringify(notification));
+          } catch (error) {
+            console.error('Error sending message deletion notification:', error);
+          }
+        }
+      });
+    }
+    
     res.json({
       success: true,
       message: 'Message deleted successfully',
-      deletedMessageId: messageId,
+      deletedMessageId: messageToDelete._id,
+      deletedMessageIndex: messageIndex,
       sender: messageToDelete.sender
     });
     
