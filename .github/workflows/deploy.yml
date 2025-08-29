@@ -20,7 +20,6 @@ jobs:
         shell: bash
         run: |
           echo "Creating backend/api-Hetasinglar/.env with production secrets..."
-          mkdir -p backend/api-Hetasinglar
           cat > backend/api-Hetasinglar/.env << EOF
           # Database Configuration
           MONGODB_URI=${{ secrets.MONGODB_URI }}
@@ -42,7 +41,11 @@ jobs:
       - name: Pack Backend (tar)
         shell: bash
         run: |
+          echo "Packing entire backend directory..."
+          ls -la backend/api-Hetasinglar/ | head -10
           tar -czf backend.tgz backend/api-Hetasinglar
+          echo "Tarball contents:"
+          tar -tf backend.tgz | head -10
 
       - name: Copy Backend to EC2
         uses: appleboy/scp-action@v0.1.4
