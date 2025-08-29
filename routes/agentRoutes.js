@@ -963,12 +963,13 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
   const agentId = req.agent?._id;
   
   try {
-    const cacheKey = `live_queue:${agentId}`;
+    // Use global cache key since all agents see the same live queue now
+    const cacheKey = `live_queue:global`;
     
     // Check fallback cache first (guaranteed to work)
     if (liveQueueCache.has(cacheKey)) {
       const cachedData = liveQueueCache.get(cacheKey);
-      console.log(`🚀 FALLBACK Cache HIT: live-queue for agent ${agentId} (${Date.now() - startTime}ms)`);
+      console.log(`🚀 FALLBACK Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
       return res.json(cachedData);
     }
     
@@ -976,19 +977,21 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     console.log(`🔍 Checking main cache for key: ${cacheKey}`);
     const cached = cache.get && cache.get(cacheKey);
     if (cached) {
-      console.log(`🚀 Main Cache HIT: live-queue for agent ${agentId} (${Date.now() - startTime}ms)`);
+      console.log(`🚀 Main Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
       return res.json(cached);
     }
     
-    console.log(`❌ Cache MISS: live-queue for agent ${agentId} - generating fresh data`);
+    console.log(`❌ Cache MISS: global live-queue - generating fresh data`);
 
     // Super-optimized aggregation - minimal operations for max speed
+    // Modified: All agents can see all chats with unread messages or new status
     const chats = await Chat.aggregate([
       {
         $match: {
           $or: [
-            { agentId: agentId },
-            { status: 'new' }
+            { status: 'new' },
+            { status: 'assigned' },
+            { status: 'active' }
           ]
         }
       },
@@ -1042,10 +1045,20 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
+        $lookup: {
+          from: 'agents',
+          localField: 'agentId',
+          foreignField: '_id',
+          as: 'assignedAgent',
+          pipeline: [{ $project: { name: 1, agentId: 1 } }]
+        }
+      },
+      {
         $project: {
           customerId: { $arrayElemAt: ['$customer', 0] },
           escortId: { $arrayElemAt: ['$escort', 0] },
           agentId: 1,
+          assignedAgent: { $arrayElemAt: ['$assignedAgent', 0] },
           status: 1,
           customerName: 1,
           lastCustomerResponse: 1,
@@ -1094,7 +1107,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
 
     // Set fallback cache with 15-second TTL (guaranteed to work)
     liveQueueCache.set(cacheKey, chats);
-    console.log(`💾 FALLBACK cache set for agent ${agentId}`);
+    console.log(`💾 FALLBACK cache set for global live-queue`);
     
     // Clear cache after 15 seconds
     if (cacheTimers.has(cacheKey)) {
@@ -1103,7 +1116,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     const timer = setTimeout(() => {
       liveQueueCache.delete(cacheKey);
       cacheTimers.delete(cacheKey);
-      console.log(`🗑️ FALLBACK cache expired for agent ${agentId}`);
+      console.log(`🗑️ FALLBACK cache expired for global live-queue`);
     }, 15000); // 15 second cache
     cacheTimers.set(cacheKey, timer);
     
@@ -1111,18 +1124,18 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     try {
       if (cache.set) {
         cache.set(cacheKey, chats, 30 * 1000);
-        console.log(`🗄️ Main cache also set for agent ${agentId}`);
+        console.log(`🗄️ Main cache also set for global live-queue`);
       }
     } catch (cacheError) {
       console.log(`⚠️ Main cache failed, but fallback cache is working`);
     }
     
-    console.log(`⚡ Live queue generated for agent ${agentId} in ${Date.now() - startTime}ms (${chats.length} chats)`);
+    console.log(`⚡ Global live queue generated in ${Date.now() - startTime}ms (${chats.length} chats)`);
     res.json(chats);
     
   } catch (error) {
     console.error('Error fetching live queue chats:', error);
-  console.log(`❌ Live queue failed for agent ${agentId || 'unknown'} in ${Date.now() - startTime}ms`);
+    console.log(`❌ Global live queue failed in ${Date.now() - startTime}ms`);
     res.status(500).json({ 
       message: 'Failed to fetch live queue chats',
       error: error.message,
