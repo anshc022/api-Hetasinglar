@@ -984,14 +984,18 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     console.log(`❌ Cache MISS: global live-queue - generating fresh data`);
 
     // Super-optimized aggregation - minimal operations for max speed
-    // Modified: All agents can see all chats with unread messages or new status
+    // Modified: All agents can see all chats with unread messages, reminders, panic room, or new status
     const chats = await Chat.aggregate([
       {
         $match: {
           $or: [
             { status: 'new' },
             { status: 'assigned' },
-            { status: 'active' }
+            { status: 'active' },
+            { isInPanicRoom: true },
+            { requiresFollowUp: true },
+            { reminderHandled: false },
+            { reminderSnoozedUntil: { $exists: true } }
           ]
         }
       },
@@ -1014,14 +1018,32 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           },
           // Get last message efficiently
           lastMessage: { $arrayElemAt: ['$messages', -1] },
-          // Priority based on unread count
+          // Enhanced priority calculation including panic room and reminders
           priority: {
             $switch: {
               branches: [
+                // Panic room has highest priority (5)
+                { case: { $eq: ['$isInPanicRoom', true] }, then: 5 },
+                // Unhandled reminders have high priority (4) 
+                { case: { $eq: ['$reminderHandled', false] }, then: 4 },
+                // Many unread messages have medium-high priority (3)
                 { case: { $gt: [{ $size: { $filter: { input: '$messages', as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 5] }, then: 3 },
+                // Some unread messages have medium priority (2)
                 { case: { $gt: [{ $size: { $filter: { input: '$messages', as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 0] }, then: 2 }
               ],
               default: 1
+            }
+          },
+          // Chat type classification
+          chatType: {
+            $switch: {
+              branches: [
+                { case: { $eq: ['$isInPanicRoom', true] }, then: 'panic' },
+                { case: { $eq: ['$reminderHandled', false] }, then: 'reminder' },
+                { case: { $eq: ['$requiresFollowUp', true] }, then: 'reminder' },
+                { case: { $exists: ['$reminderSnoozedUntil'] }, then: 'reminder' }
+              ],
+              default: 'queue'
             }
           }
         }
@@ -1076,6 +1098,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           updatedAt: 1,
           unreadCount: 1,
           priority: 1,
+          chatType: 1,
           lastMessage: {
             message: {
               $cond: [
