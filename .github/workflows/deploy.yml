@@ -16,10 +16,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Create Environment File
+      - name: Create Environment File (backend)
         shell: bash
         run: |
-          echo "Creating backend/.env file with production secrets..."
+          echo "Creating backend/api-Hetasinglar/.env with production secrets..."
           mkdir -p backend/api-Hetasinglar
           cat > backend/api-Hetasinglar/.env << EOF
           # Database Configuration
@@ -39,14 +39,19 @@ jobs:
           ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS }}
           EOF
 
-      - name: Copy Files to EC2
+      - name: Pack Backend (tar)
+        shell: bash
+        run: |
+          tar -czf backend.tgz backend/api-Hetasinglar
+
+      - name: Copy Backend to EC2
         uses: appleboy/scp-action@v0.1.4
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          source: "."
+          source: "backend.tgz"
           target: ${{ env.PROJECT_PATH }}
           overwrite: true
           rm: true
@@ -59,14 +64,18 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
           script: |
-            cd ${{ env.PROJECT_PATH }}/backend/api-Hetasinglar
+            set -e
+            cd ${{ env.PROJECT_PATH }}
             echo "Remote PWD: $(pwd)"
+            echo "Extracting backend.tgz..."
+            mkdir -p backend
+            tar -xzf backend.tgz
             echo "Listing files in backend/api-Hetasinglar:"
-            ls -la
+            ls -la backend/api-Hetasinglar
             if command -v node >/dev/null 2>&1; then node -v; fi
             if command -v npm >/dev/null 2>&1; then npm -v; fi
-            chmod +x deploy.sh
-            ./deploy.sh
+            chmod +x backend/api-Hetasinglar/deploy.sh
+            backend/api-Hetasinglar/deploy.sh
 
       - name: Deployment Status
         if: always()
