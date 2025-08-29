@@ -957,6 +957,56 @@ router.patch('/chats/:chatId/info', agentAuth, async (req, res) => {
   }
 });
 
+// Assign agent to chat
+router.post('/chats/:chatId/assign', agentAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const agentId = req.agent._id;
+    
+    // Validate chatId
+    if (!chatId) {
+      return res.status(400).json({ message: 'Chat ID is required' });
+    }
+
+    // Find and update the chat to assign the current agent
+    const chat = await Chat.findByIdAndUpdate(
+      chatId,
+      { 
+        agentId: agentId,
+        status: 'assigned',
+        $push: {
+          assignedHistory: {
+            agentId: agentId,
+            assignedAt: new Date()
+          }
+        }
+      },
+      { new: true, runValidators: true }
+    ).populate('agentId', 'name agentId');
+
+    if (!chat) {
+      return res.status(404).json({ message: 'Chat not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Agent assigned to chat successfully',
+      chat: {
+        _id: chat._id,
+        agentId: chat.agentId,
+        status: chat.status,
+        updatedAt: chat.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error('Error assigning agent to chat:', error);
+    res.status(500).json({ 
+      message: 'Failed to assign agent to chat',
+      error: error.message 
+    });
+  }
+});
+
 // Get chats for live queue (used by reminder system) - ULTRA OPTIMIZED with Fallback Cache
 router.get('/chats/live-queue', agentAuth, async (req, res) => {
   const startTime = Date.now();
@@ -994,8 +1044,10 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
             { status: 'active' },
             { isInPanicRoom: true },
             { requiresFollowUp: true },
-            { reminderHandled: false },
-            { reminderSnoozedUntil: { $exists: true } }
+            { reminderHandled: { $ne: true } }, // Changed: Show chats where reminderHandled is not true
+            { reminderSnoozedUntil: { $exists: true } },
+            // Add condition to show chats with any messages (for debugging)
+            { 'messages.0': { $exists: true } }
           ]
         }
       },
@@ -1018,14 +1070,29 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           },
           // Get last message efficiently
           lastMessage: { $arrayElemAt: ['$messages', -1] },
+          // Get the last agent message to determine who's handling this chat
+          lastAgentMessage: {
+            $arrayElemAt: [
+              {
+                $filter: {
+                  input: '$messages',
+                  as: 'msg',
+                  cond: { $eq: ['$$msg.sender', 'agent'] }
+                }
+              },
+              -1
+            ]
+          },
           // Enhanced priority calculation including panic room and reminders
           priority: {
             $switch: {
               branches: [
                 // Panic room has highest priority (5)
                 { case: { $eq: ['$isInPanicRoom', true] }, then: 5 },
-                // Unhandled reminders have high priority (4) 
-                { case: { $eq: ['$reminderHandled', false] }, then: 4 },
+                // Unhandled reminders have high priority (4) - using more permissive condition
+                { case: { $ne: ['$reminderHandled', true] }, then: 4 },
+                // Follow-up required chats also high priority (4)
+                { case: { $eq: ['$requiresFollowUp', true] }, then: 4 },
                 // Many unread messages have medium-high priority (3)
                 { case: { $gt: [{ $size: { $filter: { input: '$messages', as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 5] }, then: 3 },
                 // Some unread messages have medium priority (2)
@@ -1039,9 +1106,11 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
             $switch: {
               branches: [
                 { case: { $eq: ['$isInPanicRoom', true] }, then: 'panic' },
-                { case: { $eq: ['$reminderHandled', false] }, then: 'reminder' },
+                { case: { $ne: ['$reminderHandled', true] }, then: 'reminder' }, // Changed: Show as reminder if not explicitly handled
                 { case: { $eq: ['$requiresFollowUp', true] }, then: 'reminder' },
-                { case: { $exists: ['$reminderSnoozedUntil'] }, then: 'reminder' }
+                { case: { $ne: ['$reminderSnoozedUntil', null] }, then: 'reminder' },
+                // If chat has unread messages, classify as queue
+                { case: { $gt: [{ $size: { $filter: { input: '$messages', as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 0] }, then: 'queue' }
               ],
               default: 'queue'
             }
@@ -1059,6 +1128,33 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       },
       {
         $lookup: {
+          from: 'agentcustomers',
+          localField: 'customerId',
+          foreignField: 'customerId',
+          as: 'customerAssignment',
+          pipeline: [
+            { $match: { status: 'active' } },
+            {
+              $lookup: {
+                from: 'agents',
+                localField: 'agentId',
+                foreignField: '_id',
+                as: 'assignedAgentInfo',
+                pipeline: [{ $project: { name: 1, agentId: 1 } }]
+              }
+            },
+            {
+              $project: {
+                agentId: 1,
+                assignedAgentInfo: { $arrayElemAt: ['$assignedAgentInfo', 0] },
+                assignmentType: 1
+              }
+            }
+          ]
+        }
+      },
+      {
+        $lookup: {
           from: 'escortprofiles',
           localField: 'escortId',
           foreignField: '_id',
@@ -1069,10 +1165,21 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       {
         $lookup: {
           from: 'agents',
-          localField: 'agentId',
-          foreignField: '_id',
-          as: 'assignedAgent',
-          pipeline: [{ $project: { name: 1, agentId: 1 } }]
+          let: { chatAgentId: '$agentId', chatAssignedAgent: '$assignedAgent' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $or: [
+                    { $eq: ['$_id', '$$chatAgentId'] },
+                    { $eq: ['$_id', '$$chatAssignedAgent'] }
+                  ]
+                }
+              }
+            },
+            { $project: { name: 1, agentId: 1 } }
+          ],
+          as: 'assignedAgent'
         }
       },
       {
@@ -1080,7 +1187,38 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           customerId: { $arrayElemAt: ['$customer', 0] },
           escortId: { $arrayElemAt: ['$escort', 0] },
           agentId: 1,
-          assignedAgent: { $arrayElemAt: ['$assignedAgent', 0] },
+          assignedAgent: {
+            $cond: [
+              // First priority: Use customer assignment from admin panel
+              { $gt: [{ $size: '$customerAssignment' }, 0] },
+              {
+                $let: {
+                  vars: { assignment: { $arrayElemAt: ['$customerAssignment', 0] } },
+                  in: '$$assignment.assignedAgentInfo'
+                }
+              },
+              // Second priority: Use chat's agentId lookup
+              {
+                $cond: [
+                  { $gt: [{ $size: '$assignedAgent' }, 0] },
+                  { $arrayElemAt: ['$assignedAgent', 0] },
+                  // Third priority: Use name from last agent message
+                  {
+                    $cond: [
+                      { $ne: ['$lastAgentMessage.senderName', null] },
+                      {
+                        name: '$lastAgentMessage.senderName',
+                        agentId: 'Unknown',
+                        _id: null,
+                        isFromMessage: true
+                      },
+                      null
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
           status: 1,
           customerName: 1,
           lastCustomerResponse: 1,
