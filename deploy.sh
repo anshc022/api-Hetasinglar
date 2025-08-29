@@ -1,7 +1,13 @@
 #!/bin/bash
 
 # Graceful deployment script for Hetasinglar API
+set -euo pipefail
 echo "🚀 Starting Hetasinglar API deployment..."
+
+# Resolve script directory and use it as app root
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+echo "📁 Working directory: $(pwd)"
 
 # Function to check if application is running
 check_app() {
@@ -63,26 +69,36 @@ verify_deployment() {
     return 1
 }
 
-# Main deployment process
-cd ~/apps/api-Hetasinglar || exit 1
-
-echo "📁 Working directory: $(pwd)"
+# Main deployment process runs from SCRIPT_DIR
 
 # Stop existing processes
 stop_processes
 
 # Install dependencies
 echo "📦 Installing dependencies..."
-npm install --production --silent
+if command -v npm >/dev/null 2>&1; then
+    if [ -f package-lock.json ]; then
+        npm ci --only=production --silent || npm ci --silent || npm install --production --silent
+    else
+        npm install --production --silent
+    fi
+else
+    echo "❌ npm is not installed or not in PATH" >&2
+    exit 1
+fi
 
-# Create environment file
-echo "🔧 Creating environment file..."
-cat > .env << 'EOF'
+# Use existing environment file (created by CI) if present
+if [ -f .env ]; then
+    echo "🔧 Using existing .env file"
+else
+    echo "⚠️  .env not found. Creating minimal .env from defaults."
+    cat > .env << 'EOF'
 PORT=5000
 NODE_ENV=production
 FRONTEND_URL=https://hetasinglar.vercel.app
-ALLOWED_ORIGINS=https://hetasinglar.vercel.app,https://hetasinglar.onrender.com,https://www.hetasinglar.onrender.com
+ALLOWED_ORIGINS=https://hetasinglar.vercel.app
 EOF
+fi
 
 # Start application
 start_app

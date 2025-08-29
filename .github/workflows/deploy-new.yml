@@ -1,88 +1,10 @@
-# GitHub Actions workflow for automatic deployment to AWS EC2
-name: Deploy to AWS EC2
+name: noop duplicate (not used)
 
-# Trigger workflow on push to main branch
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch: # Allow manual trigger
-
-env:
-  PROJECT_PATH: ~/apps/api-Hetasinglar
+	workflow_call:
 
 jobs:
-  deploy:
-    name: Deploy to EC2
-    runs-on: ubuntu-latest
-
-    steps:
-      # Step 1: Checkout the repository code
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      # Step 2: Create Environment File
-      - name: Create Environment File
-        run: |
-          echo "Creating .env file with production secrets..."
-          cat > .env << EOF
-          # Database Configuration
-          MONGODB_URI=${{ secrets.MONGODB_URI }}
-          
-          # Authentication
-          JWT_SECRET=${{ secrets.JWT_SECRET }}
-          
-          # Server Configuration
-          PORT=5000
-          NODE_ENV=production
-          
-          # Frontend Configuration
-          FRONTEND_URL=https://hetasinglar.vercel.app
-          
-          # CORS Configuration
-          ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS || 'https://hetasinglar.vercel.app' }}
-          EOF
-
-      # Step 3: Copy project files to EC2 server
-      - name: Copy Files to EC2
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          # EC2 connection details from GitHub Secrets
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: 22
-          
-          # Source and destination paths
-          source: "."
-          target: ${{ env.PROJECT_PATH }}
-          
-          # Overwrite existing files and remove extra files
-          overwrite: true
-          rm: true
-
-      # Step 4: Deploy application
-      - name: Deploy Application
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          # EC2 connection details
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: 22
-          
-          # Simple deployment commands
-          script: |
-            cd ${{ env.PROJECT_PATH }}
-            chmod +x deploy.sh
-            ./deploy.sh
-
-      # Step 5: Deployment notification
-      - name: Deployment Status
-        if: always()
-        run: |
-          if [ ${{ job.status }} == 'success' ]; then
-            echo "🚀 Deployment completed successfully!"
-          else
-            echo "❌ Deployment failed. Check the logs above."
-            exit 1
-          fi
+	noop:
+		runs-on: ubuntu-latest
+		steps:
+			- run: echo "noop"
