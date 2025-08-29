@@ -20,32 +20,16 @@ const agentCustomerSchema = new mongoose.Schema({
   },
   assignmentType: {
     type: String,
-    enum: ['affiliate', 'manual', 'auto', 'agent_request'],
+    enum: ['affiliate', 'manual', 'auto'],
     default: 'manual'
   },
   
   // Status
   status: {
     type: String,
-    enum: ['active', 'inactive', 'suspended', 'pending', 'declined'],
+    enum: ['active', 'inactive', 'suspended'],
     default: 'active'
   },
-  
-  // Assignment request details
-  requestedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Agent'
-  },
-  requestedAt: {
-    type: Date,
-    default: Date.now
-  },
-  reviewedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Admin'
-  },
-  reviewedAt: Date,
-  reviewNotes: String,
   
   // Commission settings for this specific agent-customer relationship
   customCommissionRates: {
