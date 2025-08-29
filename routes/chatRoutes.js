@@ -131,11 +131,20 @@ const recordEarnings = async (userId, chatId, agentId, coinsUsed, messageType = 
     const COIN_VALUE = global.commissionSettings?.coinValue || 1.00; // $1 per coin
     const totalAmount = coinsUsed * COIN_VALUE;
     
-    // Simple fixed commission percentages
-    // Agent: 30%, Affiliate: 20% (if exists), Admin: 50% (or 70% if no affiliate)
-    const agentPerc = 30;
-    const affiliatePerc = user.affiliateAgent ? 20 : 0;
-    const adminPerc = user.affiliateAgent ? 50 : 70;
+    // Commission percentages priority:
+    // 1) Agent custom settings
+    // 2) Global defaults from CommissionSettings
+    // 3) Fallback to hard-coded 30/20 and remainder for admin
+    const CommissionSettings = require('../models/CommissionSettings');
+    let defaults = await CommissionSettings.findOne().sort({ updatedAt: -1 });
+    const baseAgentPerc = agent?.commissionSettings?.chatCommissionPercentage ?? defaults?.defaultAgentPercentage ?? 30;
+    const baseAffiliatePerc = user.affiliateAgent
+      ? (agent?.commissionSettings?.affiliateCommissionPercentage ?? defaults?.defaultAffiliatePercentage ?? 20)
+      : 0;
+    const remainder = 100 - (baseAgentPerc + baseAffiliatePerc);
+    const agentPerc = Math.max(0, Math.min(100, baseAgentPerc));
+    const affiliatePerc = Math.max(0, Math.min(100 - agentPerc, baseAffiliatePerc));
+    const adminPerc = Math.max(0, remainder);
 
     // Create earning record
     const earning = new Earnings({

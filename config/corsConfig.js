@@ -11,6 +11,7 @@ const corsConfig = {
   // Production origins
   production: [
     'https://hetasinglar.vercel.app',
+    'https://www.hetasinglar.vercel.app',
     'https://hetasinglar.onrender.com',
     'https://www.hetasinglar.onrender.com',
   ],

@@ -11,6 +11,7 @@ const Escort = require('../models/Escort');
 const EscortProfile = require('../models/EscortProfile');
 const AffiliateLink = require('../models/AffiliateLink');
 const { adminAuth } = require('../auth');
+const CommissionSettings = require('../models/CommissionSettings');
 const router = express.Router();
 
 // Use a consistent frontend URL (avoid localhost in production)
@@ -100,7 +101,22 @@ router.get('/dashboard', adminAuth, async (req, res) => {
 // Agent Management
 router.post('/agents', adminAuth, async (req, res) => {
   try {
-    const agent = new Agent(req.body);
+    // Apply default commission settings for new agents if not provided
+    const existingDefaults = await CommissionSettings.findOne().sort({ updatedAt: -1 });
+    const defaults = existingDefaults || { defaultAgentPercentage: 30, defaultAffiliatePercentage: 20 };
+
+    const payload = { ...req.body };
+    if (!payload.commissionSettings) {
+      const agentPerc = defaults.defaultAgentPercentage ?? 30;
+      const affiliatePerc = defaults.defaultAffiliatePercentage ?? 20;
+      payload.commissionSettings = {
+        chatCommissionPercentage: agentPerc,
+        affiliateCommissionPercentage: affiliatePerc,
+        customRatesEnabled: false,
+      };
+    }
+
+    const agent = new Agent(payload);
     await agent.save();
     res.status(201).json(agent);
   } catch (error) {
@@ -366,18 +382,20 @@ router.get('/agents/:id/commission', adminAuth, async (req, res) => {
 // Get and update default commission settings
 router.get('/commission-settings', adminAuth, async (req, res) => {
   try {
-    // For now, we'll store default settings in a simple way
-    // In a production app, you might want a dedicated Settings model
-    const defaultSettings = {
-      defaultAdminPercentage: 50,
-      defaultAgentPercentage: 30,
-      defaultAffiliatePercentage: 20
-    };
-    
-    res.json({
-      success: true,
-      settings: defaultSettings
-    });
+    const existing = await CommissionSettings.findOne().sort({ updatedAt: -1 });
+    const settings = existing
+      ? {
+          defaultAdminPercentage: existing.defaultAdminPercentage,
+          defaultAgentPercentage: existing.defaultAgentPercentage,
+          defaultAffiliatePercentage: existing.defaultAffiliatePercentage,
+        }
+      : {
+          defaultAdminPercentage: 50,
+          defaultAgentPercentage: 30,
+          defaultAffiliatePercentage: 20,
+        };
+
+    res.json({ success: true, settings });
   } catch (error) {
     console.error('Error fetching commission settings:', error);
     res.status(500).json({ error: 'Failed to fetch commission settings' });
@@ -411,16 +429,25 @@ router.put('/commission-settings', adminAuth, async (req, res) => {
       });
     }
 
-    // In a production app, you would save these to a database
-    // For now, we'll just return success
+    // Persist to database (upsert single settings document)
+    const saved = await CommissionSettings.findOneAndUpdate(
+      {},
+      {
+        defaultAdminPercentage,
+        defaultAgentPercentage,
+        defaultAffiliatePercentage,
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
+
     res.json({
       success: true,
       message: 'Commission settings updated successfully',
       settings: {
-        defaultAdminPercentage,
-        defaultAgentPercentage,
-        defaultAffiliatePercentage
-      }
+        defaultAdminPercentage: saved.defaultAdminPercentage,
+        defaultAgentPercentage: saved.defaultAgentPercentage,
+        defaultAffiliatePercentage: saved.defaultAffiliatePercentage,
+      },
     });
   } catch (error) {
     console.error('Error updating commission settings:', error);
