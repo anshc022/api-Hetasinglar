@@ -22,7 +22,7 @@ const chatSchema = new mongoose.Schema({
     _id: { type: mongoose.Schema.Types.ObjectId, default: () => new mongoose.Types.ObjectId() },
     sender: { type: String, enum: ['agent', 'customer'] },
     message: String,
-    messageType: { type: String, enum: ['text', 'image'], default: 'text' },
+  messageType: { type: String, enum: ['text', 'image', 'voice'], default: 'text' },
     imageData: String, // Base64 encoded image data
     mimeType: String, // Image MIME type
     filename: String, // Original filename
