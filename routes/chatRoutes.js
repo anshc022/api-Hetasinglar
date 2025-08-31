@@ -749,7 +749,7 @@ router.get('/user/escort/:escortId', async (req, res) => {
   }
 });
 
-// Send a message in chat - OPTIMIZED
+// Send a message in chat - SUPER FAST OPTIMIZED
 router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
   const startTime = Date.now();
   
@@ -768,7 +768,6 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
-    let user; // Declare user here to be accessible in the whole try block
     let coinDeduction = false;
 
     // If user is customer, prepare for coin deduction (already validated in middleware)
@@ -829,52 +828,82 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
       }
     }
 
-    // Execute chat update and coin deduction in parallel for performance
-    const operations = [
-      Chat.findByIdAndUpdate(chatId, chatUpdate, { new: false })
-    ];
+    // ⚡ INSTANT RESPONSE: Only save message and respond immediately
+    await Chat.findByIdAndUpdate(chatId, chatUpdate, { new: false });
 
-    if (coinDeduction) {
-      operations.push(
-        User.findByIdAndUpdate(
-          req.user.id,
-          {
-            $inc: { 
-              'coins.balance': -1,
-              'coins.totalUsed': 1
-            },
-            $set: {
-              'coins.lastUsageDate': new Date()
-            },
-            $push: {
-              'coins.usageHistory': {
-                date: new Date(),
-                amount: 1,
-                chatId: chat._id,
-                messageType
-              }
-            }
-          },
-          { new: true, select: 'coins' }
-        )
-      );
+    // 🚀 IMMEDIATE WebSocket notification for instant messaging
+    if (req.app.locals.wss) {
+      const chatMessageNotification = {
+        type: 'chat_message',
+        chatId: chat._id,
+        sender: newMessage.sender,
+        message: newMessage.message,
+        messageType: newMessage.messageType,
+        timestamp: newMessage.timestamp,
+        readByAgent: newMessage.readByAgent,
+        readByCustomer: newMessage.readByCustomer,
+        imageData: messageType === 'image' ? imageData : undefined,
+        mimeType: messageType === 'image' ? mimeType : undefined,
+        filename: messageType === 'image' ? filename : undefined
+      };
+
+      // Instant broadcast to all connected clients
+      req.app.locals.wss.clients.forEach(client => {
+        if (client.readyState === 1) {
+          try {
+            client.send(JSON.stringify(chatMessageNotification));
+          } catch (error) {
+            console.error('Error sending instant message notification:', error);
+          }
+        }
+      });
     }
 
-    const results = await Promise.all(operations);
-    const updatedChat = results[0];
-    const updatedUser = coinDeduction ? results[1] : null;
+    // ⚡ RESPOND IMMEDIATELY - Don't wait for background operations
+    const responseTime = Date.now() - startTime;
+    res.json({ 
+      success: true, 
+      messageId: newMessage._id,
+      timestamp: newMessage.timestamp,
+      responseTime: `${responseTime}ms`
+    });
 
-    // 🚀 ASYNC OPTIMIZATIONS: Move heavy operations to background
+    // 🔄 ALL HEAVY OPERATIONS MOVED TO BACKGROUND for instant messaging
     setImmediate(async () => {
       try {
+        // Handle coin deduction in background
+        if (coinDeduction) {
+          await User.findByIdAndUpdate(
+            req.user.id,
+            {
+              $inc: { 
+                'coins.balance': -1,
+                'coins.totalUsed': 1
+              },
+              $set: {
+                'coins.lastUsageDate': new Date()
+              },
+              $push: {
+                'coins.usageHistory': {
+                  date: new Date(),
+                  amount: 1,
+                  chatId: chat._id,
+                  messageType
+                }
+              }
+            },
+            { new: true, select: 'coins' }
+          );
+        }
+
         // Invalidate relevant caches after message is sent
         const cacheKeys = [
           `live_queue_updates:${req.user?.id || 'all'}`,
           `live_queue:${chat.escortId || 'all'}`,
-          `live_queue:${chat.escortId}:${chat.agentId}`, // Escort-specific live queue
-          `my_escorts:${chat.agentId}`, // Agent's escorts list
+          `live_queue:${chat.escortId}:${chat.agentId}`,
+          `my_escorts:${chat.agentId}`,
           `chat_${chatId}`,
-          `user:chats:${chat.customerId}` // User's chats cache
+          `user:chats:${chat.customerId}`
         ];
         cacheKeys.forEach(key => cache.delete(key));
 
@@ -889,115 +918,51 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
           );
         }
 
-        // WebSocket notifications (background operation)
-        if (req.app.locals.wss) {
+        // Send live queue update notification (background)
+        if (!req.agent && req.app.locals.wss) {
           const unreadCount = (chat.messages || []).filter(msg => 
             msg.sender === 'customer' && !msg.readByAgent
-          ).length + (req.agent ? 0 : 1);
+          ).length + 1;
 
-          if (!req.agent) {
-            // Send live queue update notification
-            const liveQueueNotification = {
-              type: 'live_queue_update',
-              event: 'new_message',
-              chatId: chat._id,
-              customerId: chat.customerId,
-              escortId: chat.escortId,
-              customerName: chat.customerName || 'Anonymous',
-              message: {
-                sender: newMessage.sender,
-                message: newMessage.messageType === 'image' ? '📷 Image' : newMessage.message,
-                messageType: newMessage.messageType,
-                timestamp: newMessage.timestamp
-              },
-              unreadCount,
-              lastActivity: new Date().toISOString(),
-              status: chatUpdate.$set.status || chat.status
-            };
-
-            // Broadcast live queue updates
-            req.app.locals.wss.clients.forEach(client => {
-              if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
-                try {
-                  client.send(JSON.stringify(liveQueueNotification));
-                } catch (error) {
-                  console.error('Error sending live queue notification:', error);
-                }
-              }
-            });
-            console.log(`📡 Sent WebSocket notifications for chat ${chat._id} to agent`);
-          }
-
-          // Send chat message notification for real-time chat updates
-          const chatMessageNotification = {
-            type: 'chat_message',
+          const liveQueueNotification = {
+            type: 'live_queue_update',
+            event: 'new_message',
             chatId: chat._id,
-            sender: newMessage.sender,
-            message: newMessage.message,
-            messageType: newMessage.messageType,
-            timestamp: newMessage.timestamp,
-            readByAgent: newMessage.readByAgent,
-            readByCustomer: newMessage.readByCustomer,
-            imageData: messageType === 'image' ? imageData : undefined,
-            mimeType: messageType === 'image' ? mimeType : undefined,
-            filename: messageType === 'image' ? filename : undefined
+            customerId: chat.customerId,
+            escortId: chat.escortId,
+            customerName: chat.customerName || 'Anonymous',
+            message: {
+              sender: newMessage.sender,
+              message: newMessage.messageType === 'image' ? '📷 Image' : newMessage.message,
+              messageType: newMessage.messageType,
+              timestamp: newMessage.timestamp
+            },
+            unreadCount,
+            lastActivity: new Date().toISOString(),
+            status: chatUpdate.$set.status || chat.status
           };
 
-          // Broadcast to all connected agents
+          // Broadcast live queue updates to agents only
           req.app.locals.wss.clients.forEach(client => {
             if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
               try {
-                client.send(JSON.stringify(chatMessageNotification));
+                client.send(JSON.stringify(liveQueueNotification));
               } catch (error) {
-                console.error('Error sending chat message notification:', error);
+                console.error('Error sending live queue notification:', error);
               }
             }
           });
         }
-      } catch (error) {
-        console.error('Background operations error:', error);
+
+        console.log(`⚡ Background operations completed for chat ${chat._id}`);
+      } catch (bgError) {
+        console.error('Background operation error:', bgError);
+        // Don't fail the main request if background operations fail
       }
     });
 
-    // Return formatted response immediately
-    const response = {
-      id: chat._id,
-      message,
-      messageType,
-      sender: req.agent ? 'agent' : 'customer',
-      timestamp: newMessage.timestamp.toISOString()
-    };
-
-    // Include image data in response if it's an image message
-    if (messageType === 'image') {
-      response.imageData = imageData;
-      response.mimeType = mimeType;
-      response.filename = filename;
-    }
-
-    if (updatedUser) {
-      response.coinInfo = {
-        used: 1,
-        remaining: updatedUser.coins.balance
-      };
-    }
-
-    const responseTime = Date.now() - startTime;
-    if (responseTime > 500) {
-      console.log(`⚠️ Slow message send: ${responseTime}ms`);
-    }
-
-    res.json(response);
-
   } catch (error) {
     console.error('Send message error:', error);
-    console.error('Error stack:', error.stack);
-    console.error('Chat ID:', req.params.chatId);
-    console.error('User info:', { 
-      isAgent: !!req.agent, 
-      agentId: req.agent?._id, 
-      userId: req.user?._id 
-    });
     res.status(500).json({ message: 'Failed to send message', error: error.message });
   }
 });

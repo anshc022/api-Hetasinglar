@@ -57,7 +57,7 @@ router.post('/login', async (req, res) => {
     res.status(500).json({ message: 'Login failed', error: error.message });
   }
 });
-          pipeline: [{ $project: { _id: 1, firstName: 1, lastName: 1, profileImage: 1, profilePicture: 1, imageUrl: 1 } }]
+
 // Get all escort profiles (PUBLIC - no auth required, with optional filters/pagination)
 router.get('/escorts', async (req, res) => {
   try {
@@ -1159,8 +1159,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           localField: 'escortId',
           foreignField: '_id',
           as: 'escort',
-          // Include _id so frontend can navigate using escortId._id
-          pipeline: [{ $project: { _id: 1, firstName: 1, lastName: 1, profileImage: 1, profilePicture: 1, imageUrl: 1 } }]
+          pipeline: [{ $project: { firstName: 1 } }]
         }
       },
       {
@@ -1186,7 +1185,6 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       {
         $project: {
           customerId: { $arrayElemAt: ['$customer', 0] },
-          // Keep property name escortId to match frontend usage chat.escortId._id
           escortId: { $arrayElemAt: ['$escort', 0] },
           agentId: 1,
           assignedAgent: {
@@ -1328,29 +1326,28 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
       return res.json(cached);
     }
     
-    // Fetch escort profile by ID (global view, no ownership restriction)
-    const escort = await EscortProfile.findById(escortId)
-      .select('firstName lastName profileImage profilePicture imageUrl')
-      .lean();
+    // First verify that the escort belongs to this agent (cached query)
+    const escort = await EscortProfile.findOne({
+      _id: escortId,
+      $or: [
+        { 'createdBy.id': agentId }, // New format
+        { createdBy: agentId }       // Backward compatibility
+      ]
+    }).select('firstName lastName profileImage profilePicture imageUrl').lean();
+    
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found' });
+      return res.status(404).json({ message: 'Escort profile not found or not authorized' });
     }
     
     // Use aggregation pipeline for better performance
     const chats = await Chat.aggregate([
-      // Stage 1: Match chats for this escort (global visibility)
+      // Stage 1: Match chats for this escort and agent
       {
         $match: {
           escortId: new mongoose.Types.ObjectId(escortId),
           $or: [
-            { status: 'new' },
-            { status: 'assigned' },
-            { status: 'active' },
-            { isInPanicRoom: true },
-            { requiresFollowUp: true },
-            { reminderHandled: { $ne: true } },
-            { reminderSnoozedUntil: { $exists: true } },
-            { 'messages.0': { $exists: true } }
+            { agentId: agentId },
+            { status: 'new' }
           ]
         }
       },
@@ -1401,11 +1398,10 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
             $size: {
               $filter: {
                 input: '$messages',
-                as: 'message',
                 cond: {
                   $and: [
-                    { $eq: ['$$message.sender', 'customer'] },
-                    { $eq: ['$$message.readByAgent', false] }
+                    { $eq: ['$$this.sender', 'customer'] },
+                    { $eq: ['$$this.readByAgent', false] }
                   ]
                 }
               }
@@ -1419,15 +1415,7 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
       {
         $project: {
           customerId: '$customerId',
-          // Align shape with global live-queue: embed escort doc under escortId
-          escortId: {
-            _id: escort._id,
-            firstName: escort.firstName,
-            lastName: escort.lastName,
-            profileImage: escort.profileImage,
-            profilePicture: escort.profilePicture,
-            imageUrl: escort.imageUrl
-          },
+          escortId: { $literal: escort },
           agentId: '$agentDetails',
           status: 1,
           messages: 1,
