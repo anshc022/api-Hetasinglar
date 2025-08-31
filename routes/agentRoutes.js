@@ -9,7 +9,7 @@ const Chat = require('../models/Chat');
 const reminderService = require('../services/reminderService');
 const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
-const cache = require('../services/cache'); // Global cache service
+const cache = require('../services/cache'); 
 const crypto = require('crypto');
 
 // Fallback cache for ultra-fast live queue
@@ -1083,16 +1083,45 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
               -1
             ]
           },
-          // Enhanced priority calculation including panic room and reminders
           priority: {
             $switch: {
               branches: [
                 // Panic room has highest priority (5)
                 { case: { $eq: ['$isInPanicRoom', true] }, then: 5 },
-                // Unhandled reminders have high priority (4) - using more permissive condition
-                { case: { $ne: ['$reminderHandled', true] }, then: 4 },
+                // Unhandled reminders have high priority (4) - BUT ONLY after 6+ hours
+                { 
+                  case: { 
+                    $and: [
+          // Do not treat as reminder if there are unread customer messages
+          { $eq: ['$unreadCount', 0] },
+                      { $ne: ['$reminderHandled', true] },
+                      { $gte: [
+                        {
+                          $cond: [
+                            { $ne: ['$lastCustomerResponse', null] },
+                            {
+                              $divide: [
+                                { $subtract: [new Date(), '$lastCustomerResponse'] },
+                                1000 * 60 * 60
+                              ]
+                            },
+                            {
+                              $divide: [
+                                { $subtract: [new Date(), '$updatedAt'] },
+                                1000 * 60 * 60
+                              ]
+                            }
+                          ]
+                        },
+                        6
+                      ]}
+                    ]
+                  }, 
+                  then: 4 
+                },
                 // Follow-up required chats also high priority (4)
-                { case: { $eq: ['$requiresFollowUp', true] }, then: 4 },
+        // Only if there are no unread customer messages
+        { case: { $and: [ { $eq: ['$requiresFollowUp', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 4 },
                 // Many unread messages have medium-high priority (3)
                 { case: { $gt: [{ $size: { $filter: { input: '$messages', as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 5] }, then: 3 },
                 // Some unread messages have medium priority (2)
@@ -1101,16 +1130,64 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
               default: 1
             }
           },
+          // Calculate hours since last customer message for reminder logic
+          hoursSinceLastCustomer: {
+            $cond: [
+              { $ne: ['$lastCustomerResponse', null] },
+              {
+                $divide: [
+                  { $subtract: [new Date(), '$lastCustomerResponse'] },
+                  1000 * 60 * 60 // Convert to hours
+                ]
+              },
+              {
+                $divide: [
+                  { $subtract: [new Date(), '$updatedAt'] },
+                  1000 * 60 * 60 // Fallback to updatedAt
+                ]
+              }
+            ]
+          },
           // Chat type classification
           chatType: {
             $switch: {
               branches: [
                 { case: { $eq: ['$isInPanicRoom', true] }, then: 'panic' },
-                { case: { $ne: ['$reminderHandled', true] }, then: 'reminder' }, // Changed: Show as reminder if not explicitly handled
-                { case: { $eq: ['$requiresFollowUp', true] }, then: 'reminder' },
-                { case: { $ne: ['$reminderSnoozedUntil', null] }, then: 'reminder' },
-                // If chat has unread messages, classify as queue
-                { case: { $gt: [{ $size: { $filter: { input: '$messages', as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 0] }, then: 'queue' }
+        // If chat has unread messages, classify as queue (takes precedence over reminders)
+        { case: { $gt: ['$unreadCount', 0] }, then: 'queue' },
+                // Only show as reminder if 6+ hours have passed AND reminder not handled
+                { 
+                  case: { 
+                    $and: [
+          { $eq: ['$unreadCount', 0] },
+                      { $ne: ['$reminderHandled', true] },
+                      { $gte: [
+                        {
+                          $cond: [
+                            { $ne: ['$lastCustomerResponse', null] },
+                            {
+                              $divide: [
+                                { $subtract: [new Date(), '$lastCustomerResponse'] },
+                                1000 * 60 * 60
+                              ]
+                            },
+                            {
+                              $divide: [
+                                { $subtract: [new Date(), '$updatedAt'] },
+                                1000 * 60 * 60
+                              ]
+                            }
+                          ]
+                        },
+                        6
+                      ]}
+                    ]
+                  }, 
+                  then: 'reminder' 
+                },
+        // Follow-up or snoozed reminders only if there are no unread customer messages
+        { case: { $and: [ { $eq: ['$requiresFollowUp', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' },
+        { case: { $and: [ { $ne: ['$reminderSnoozedUntil', null] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' }
               ],
               default: 'queue'
             }
@@ -1237,6 +1314,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           unreadCount: 1,
           priority: 1,
           chatType: 1,
+          hoursSinceLastCustomer: 1,
           lastMessage: {
             message: {
               $cond: [

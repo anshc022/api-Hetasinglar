@@ -409,6 +409,11 @@ wss.on('connection', (ws) => {
       // Handle chat messages
       if (data.type === 'chat_message') {
         try {
+          // Deduplicate by clientId if provided to avoid double-processing
+          if (data.clientId && recordAndCheckDuplicate(data.chatId, data.clientId)) {
+            // Already processed/broadcast recently; skip
+            return;
+          }
           // Find the chat
           const chat = await Chat.findById(data.chatId).populate('customerId').populate('escortId');
           
@@ -479,6 +484,7 @@ wss.on('connection', (ws) => {
             timestamp: newMessage.timestamp,
             readByAgent: newMessage.readByAgent,
             readByCustomer: newMessage.readByCustomer,
+            clientId: data.clientId,
             reminderHandled: chat.reminderHandled,
             reminderHandledAt: chat.reminderHandledAt,
             reminderSnoozedUntil: chat.reminderSnoozedUntil
@@ -690,6 +696,36 @@ app.use((err, req, res, next) => {
 });
 
 // Update the server start
+// Initialize a lightweight idempotency cache for chat message broadcasts (prevents dupes)
+// Keyed by `${chatId}:${clientId}` with a timestamp value
+app.locals.sentMessageIds = app.locals.sentMessageIds || new Map();
+function recordAndCheckDuplicate(chatId, clientId, ttlMs = 5 * 60 * 1000) {
+  try {
+    if (!clientId) return false; // No clientId means we cannot dedupe
+    const key = `${chatId}:${clientId}`;
+    const now = Date.now();
+    const last = app.locals.sentMessageIds.get(key);
+    if (last && now - last < ttlMs) {
+      return true; // duplicate within TTL
+    }
+    app.locals.sentMessageIds.set(key, now);
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// Periodically prune old entries (every 10 minutes)
+setInterval(() => {
+  try {
+    const now = Date.now();
+    const ttlMs = 10 * 60 * 1000;
+    for (const [key, ts] of app.locals.sentMessageIds) {
+      if (now - ts > ttlMs) app.locals.sentMessageIds.delete(key);
+    }
+  } catch {}
+}, 10 * 60 * 1000);
+
 server.listen(process.env.PORT || 5000, () => {
   const port = process.env.PORT || 5000;
   const timestamp = new Date().toISOString();

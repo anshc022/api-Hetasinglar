@@ -456,7 +456,7 @@ router.get('/live-queue/:escortId?/:chatId?', async (req, res) => {
 router.post('/:chatId/first-contact', auth, async (req, res) => {
   try {
     const { chatId } = req.params;
-    const { message } = req.body;
+  const { message, clientId } = req.body;
 
     if (!message) {
       return res.status(400).json({ message: 'Message is required' });
@@ -477,6 +477,36 @@ router.post('/:chatId/first-contact', auth, async (req, res) => {
     });
 
     await chat.save();
+
+    // Broadcast WS chat_message so frontends can reconcile optimistic message
+    try {
+      if (req.app.locals?.wss) {
+        // record clientId for idempotency
+        if (clientId) {
+          const key = `${chat._id}:${clientId}`;
+          req.app.locals.sentMessageIds = req.app.locals.sentMessageIds || new Map();
+          req.app.locals.sentMessageIds.set(key, Date.now());
+        }
+        const wsPayload = {
+          type: 'chat_message',
+          chatId: chat._id,
+          sender: 'agent',
+          message: message,
+          messageType: 'text',
+          timestamp: new Date().toISOString(),
+          readByAgent: true,
+          readByCustomer: false,
+          clientId: clientId
+        };
+        req.app.locals.wss.clients.forEach(client => {
+          if (client.readyState === 1) {
+            try { client.send(JSON.stringify(wsPayload)); } catch {}
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('first-contact broadcast failed:', e?.message || e);
+    }
 
     // Update agent stats
     await Agent.findByIdAndUpdate(req.agent.id, {
@@ -815,8 +845,15 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
     // Update chat activity timestamps
     if (req.agent) {
       chatUpdate.$set.lastAgentResponse = new Date();
+      // Clear reminder flags when agent responds
+      chatUpdate.$set.reminderHandled = true;
+      chatUpdate.$set.reminderHandledAt = new Date();
+      chatUpdate.$unset = { reminderSnoozedUntil: 1 };
     } else {
       chatUpdate.$set.lastCustomerResponse = new Date();
+      // Reset reminder flags when customer sends new message - agent needs to respond again
+      chatUpdate.$set.reminderHandled = false;
+      chatUpdate.$unset = { reminderHandledAt: 1, reminderSnoozedUntil: 1 };
     }
 
     // Update chat status if needed
@@ -831,8 +868,45 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
     // ⚡ INSTANT RESPONSE: Only save message and respond immediately
     await Chat.findByIdAndUpdate(chatId, chatUpdate, { new: false });
 
+    // ⚡ INSTANT CACHE INVALIDATION - Clear live queue cache immediately to reflect reminder changes
+    const cache = req.app?.locals?.cache;
+    if (cache) {
+      const cacheKeys = [
+        `live_queue_updates:${req.user?.id || 'all'}`,
+        `live_queue:${chat.escortId || 'all'}`,
+        `live_queue:${chat.escortId}:${chat.agentId}`,
+        `my_escorts:${chat.agentId}`,
+        `chat_${chatId}`,
+        `user:chats:${chat.customerId}`
+      ];
+      try {
+        if (typeof cache.delete === 'function') {
+          for (const key of cacheKeys) {
+            try {
+              cache.delete(key);
+            } catch (delErr) {
+              console.warn(`Cache delete failed for key ${key}:`, delErr?.message || delErr);
+            }
+          }
+        } else {
+          console.warn('Cache instance not available for immediate invalidation');
+        }
+      } catch (e) {
+        console.error('Cache invalidation error:', e.message);
+      }
+    }
+
     // 🚀 IMMEDIATE WebSocket notification for instant messaging
     if (req.app.locals.wss) {
+      // Record clientId for idempotency map so WS handler can dedupe echoes
+      try {
+        const cid = req.body?.clientId;
+        if (cid) {
+          const key = `${chat._id}:${cid}`;
+          req.app.locals.sentMessageIds = req.app.locals.sentMessageIds || new Map();
+          req.app.locals.sentMessageIds.set(key, Date.now());
+        }
+      } catch {}
       const chatMessageNotification = {
         type: 'chat_message',
         chatId: chat._id,
@@ -842,6 +916,7 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
         timestamp: newMessage.timestamp,
         readByAgent: newMessage.readByAgent,
         readByCustomer: newMessage.readByCustomer,
+        clientId: req.body?.clientId,
         imageData: messageType === 'image' ? imageData : undefined,
         mimeType: messageType === 'image' ? mimeType : undefined,
         filename: messageType === 'image' ? filename : undefined
@@ -896,7 +971,7 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
           );
         }
 
-        // Invalidate relevant caches after message is sent
+        // Invalidate relevant caches after message is sent (guard if cache missing)
         const cacheKeys = [
           `live_queue_updates:${req.user?.id || 'all'}`,
           `live_queue:${chat.escortId || 'all'}`,
@@ -905,7 +980,18 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
           `chat_${chatId}`,
           `user:chats:${chat.customerId}`
         ];
-        cacheKeys.forEach(key => cache.delete(key));
+        const bgCache = req.app?.locals?.cache;
+        if (bgCache && typeof bgCache.delete === 'function') {
+          for (const key of cacheKeys) {
+            try {
+              bgCache.delete(key);
+            } catch (delErr) {
+              console.warn(`Background cache delete failed for key ${key}:`, delErr?.message || delErr);
+            }
+          }
+        } else {
+          console.warn('Cache instance not available during background invalidation');
+        }
 
         // Record earnings for agent commission (background operation)
         if (coinDeduction && chat.agentId) {

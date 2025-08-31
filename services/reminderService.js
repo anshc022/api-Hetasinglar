@@ -99,7 +99,9 @@ class ReminderService {
         },
         {
           $match: {
-            'lastMessage.sender': 'customer'
+            'lastMessage.sender': 'customer',
+            // Only consider if agent hasn't seen the last customer message
+            'lastMessage.readByAgent': false
           }
         },
         {
@@ -162,6 +164,11 @@ class ReminderService {
 
       // If last message is from agent, don't create reminder
       if (chatData.lastMessage.sender === 'agent') {
+        return false;
+      }
+
+      // Require that the last customer message has not been seen by the agent
+      if (chatData.lastMessage.readByAgent === true) {
         return false;
       }
 
