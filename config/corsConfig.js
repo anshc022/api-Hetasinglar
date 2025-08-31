@@ -14,6 +14,7 @@ const corsConfig = {
     'https://www.hetasinglar.vercel.app',
     'https://hetasinglar.onrender.com',
     'https://www.hetasinglar.onrender.com',
+    'https://apihetasinglar.duckdns.org',  // Add DuckDNS domain for WebSocket connections
   ],
   
   // Get allowed origins based on environment
