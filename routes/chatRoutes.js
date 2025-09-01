@@ -235,22 +235,31 @@ router.post('/:chatId/notes', async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(chatId)) {
       return res.status(400).json({ message: 'Invalid chat ID' });
     }
-    const chat = await Chat.findById(chatId);
-    if (!chat) return res.status(404).json({ message: 'Chat not found' });
+
     const note = {
       text,
       timestamp: new Date(),
       agentId: req.agent._id,
       agentName: req.agent.name || 'Agent'
     };
-    chat.comments = chat.comments || [];
-    chat.comments.push(note);
-    await chat.save();
-    const created = chat.comments[chat.comments.length - 1];
-    res.status(201).json(created);
+
+    // Atomic push without triggering full document validation
+    const updated = await Chat.findByIdAndUpdate(
+      chatId,
+      { $push: { comments: note } },
+      { new: true, runValidators: false }
+    ).select('comments');
+
+    if (!updated) {
+      return res.status(404).json({ message: 'Chat not found' });
+    }
+
+    const created = updated.comments[updated.comments.length - 1];
+    const allNotes = (updated.comments || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    return res.status(201).json({ created, allNotes });
   } catch (error) {
     console.error('Add chat note error:', error);
-    res.status(500).json({ message: 'Failed to add chat note' });
+    return res.status(500).json({ message: 'Failed to add chat note' });
   }
 });
 
@@ -263,18 +272,23 @@ router.delete('/:chatId/notes/:noteId', async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(chatId) || !mongoose.Types.ObjectId.isValid(noteId)) {
       return res.status(400).json({ message: 'Invalid ID format' });
     }
-    const chat = await Chat.findById(chatId);
-    if (!chat) return res.status(404).json({ message: 'Chat not found' });
-    const before = chat.comments?.length || 0;
-    chat.comments = (chat.comments || []).filter(n => n._id.toString() !== noteId);
-    if (chat.comments.length === before) {
+
+    const result = await Chat.updateOne(
+      { _id: chatId },
+      { $pull: { comments: { _id: new mongoose.Types.ObjectId(noteId) } } },
+      { runValidators: false }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: 'Chat not found' });
+    }
+    if (result.modifiedCount === 0) {
       return res.status(404).json({ message: 'Note not found' });
     }
-    await chat.save();
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (error) {
     console.error('Delete chat note error:', error);
-    res.status(500).json({ message: 'Failed to delete chat note' });
+    return res.status(500).json({ message: 'Failed to delete chat note' });
   }
 });
 
@@ -785,7 +799,13 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
   
   try {
     const { chatId } = req.params;
-    const { message, messageType = 'text', imageData, mimeType, filename } = req.body;
+    let { message, messageType = 'text', imageData, mimeType, filename } = req.body;
+
+    // Enforce allowed message types only
+    const allowedTypes = new Set(['text', 'image']);
+    if (!allowedTypes.has(messageType)) {
+      return res.status(400).json({ message: 'Invalid message type' });
+    }
     
     // Validate message content
     if (!message || typeof message !== 'string' || message.trim().length === 0) {
@@ -868,32 +888,39 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
     // ⚡ INSTANT RESPONSE: Only save message and respond immediately
     await Chat.findByIdAndUpdate(chatId, chatUpdate, { new: false });
 
-    // ⚡ INSTANT CACHE INVALIDATION - Clear live queue cache immediately to reflect reminder changes
-    const cache = req.app?.locals?.cache;
-    if (cache) {
+    // ⚡ INSTANT CACHE INVALIDATION - Clear live queue cache immediately to reflect reminder/message changes
+    try {
       const cacheKeys = [
+        // live queue update snapshots (scoped + global)
         `live_queue_updates:${req.user?.id || 'all'}`,
+        'live_queue_updates:all',
+        // live queue listings (scoped and global)
         `live_queue:${chat.escortId || 'all'}`,
         `live_queue:${chat.escortId}:${chat.agentId}`,
+        'live_queue:global',
+        // other related keys
         `my_escorts:${chat.agentId}`,
         `chat_${chatId}`,
         `user:chats:${chat.customerId}`
       ];
-      try {
-        if (typeof cache.delete === 'function') {
-          for (const key of cacheKeys) {
-            try {
-              cache.delete(key);
-            } catch (delErr) {
-              console.warn(`Cache delete failed for key ${key}:`, delErr?.message || delErr);
-            }
-          }
-        } else {
-          console.warn('Cache instance not available for immediate invalidation');
+      for (const key of cacheKeys) {
+        try {
+          cache.delete(key);
+        } catch (delErr) {
+          console.warn(`Cache delete failed for key ${key}:`, delErr?.message || delErr);
         }
-      } catch (e) {
-        console.error('Cache invalidation error:', e.message);
       }
+    } catch (e) {
+      console.error('Cache invalidation error:', e?.message || e);
+    }
+    // Also clear the fallback live-queue cache immediately if available
+    try {
+      const clearFallback = req.app?.locals?.clearLiveQueueFallbackCache;
+      if (typeof clearFallback === 'function') {
+        clearFallback();
+      }
+    } catch (e) {
+      console.warn('Fallback live-queue cache clear failed:', e?.message || e);
     }
 
     // 🚀 IMMEDIATE WebSocket notification for instant messaging
@@ -971,26 +998,26 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
           );
         }
 
-        // Invalidate relevant caches after message is sent (guard if cache missing)
+        // Invalidate relevant caches after message is sent (shared cache instance)
         const cacheKeys = [
+          // live queue update snapshots (scoped + global)
           `live_queue_updates:${req.user?.id || 'all'}`,
+          'live_queue_updates:all',
+          // live queue listings (scoped and global)
           `live_queue:${chat.escortId || 'all'}`,
           `live_queue:${chat.escortId}:${chat.agentId}`,
+          'live_queue:global',
+          // other related
           `my_escorts:${chat.agentId}`,
           `chat_${chatId}`,
           `user:chats:${chat.customerId}`
         ];
-        const bgCache = req.app?.locals?.cache;
-        if (bgCache && typeof bgCache.delete === 'function') {
-          for (const key of cacheKeys) {
-            try {
-              bgCache.delete(key);
-            } catch (delErr) {
-              console.warn(`Background cache delete failed for key ${key}:`, delErr?.message || delErr);
-            }
+        for (const key of cacheKeys) {
+          try {
+            cache.delete(key);
+          } catch (delErr) {
+            console.warn(`Background cache delete failed for key ${key}:`, delErr?.message || delErr);
           }
-        } else {
-          console.warn('Cache instance not available during background invalidation');
         }
 
         // Record earnings for agent commission (background operation)
@@ -1749,15 +1776,22 @@ router.get('/live-queue-updates', auth, async (req, res) => {
     ]);
 
     // Get active users in batch for presence data
-    const activeUsers = global.activeUsersService ? 
-      await global.activeUsersService.getAllActiveUsers() : new Set();
+  const activeUsersMap = ActiveUsersService.getActiveUsers();
+  const activeUserIds = new Set(activeUsersMap ? Array.from(activeUsersMap.keys()) : []);
 
     // Update presence data efficiently
     liveQueueData.forEach(chat => {
-      const isActive = activeUsers.has(chat.customerId?.toString());
-      chat.isUserActive = isActive;
-      chat.presence.isOnline = isActive;
+      const uid = chat.customerId?.toString();
+      const isActive = uid && activeUserIds.has(uid);
+      const lastSeen = isActive ? new Date() : (activeUsersMap?.get(uid) || chat.presence.lastSeen || chat.updatedAt);
+      chat.isUserActive = !!isActive;
+      chat.presence.isOnline = !!isActive;
       chat.presence.status = isActive ? 'online' : 'offline';
+      chat.presence.lastSeen = lastSeen;
+      // Keep lastActive fresh if online
+      if (isActive) {
+        chat.lastActive = new Date();
+      }
     });
 
     // Build response with metadata
@@ -1765,7 +1799,7 @@ router.get('/live-queue-updates', auth, async (req, res) => {
       liveQueue: liveQueueData,
       metadata: {
         totalChats: liveQueueData.length,
-        activeUsers: activeUsers.size,
+  activeUsers: activeUserIds.size,
         panicRoomCount: liveQueueData.filter(chat => chat.isInPanicRoom).length,
         timestamp: new Date().toISOString(),
         responseTime: Date.now() - startTime
@@ -1805,7 +1839,10 @@ router.get('/:chatId', auth, async (req, res) => {
       msg.sender === 'customer' && !msg.readByAgent
     ).length;
 
-    const isUserActive = ActiveUsersService.isUserActive(chat.customerId?._id.toString());
+  const activeMap = ActiveUsersService.getActiveUsers();
+  const uid = chat.customerId?._id?.toString();
+  const isUserActive = !!(uid && activeMap.has(uid));
+  const lastSeen = isUserActive ? new Date() : (uid ? activeMap.get(uid) : chat.updatedAt);
 
     const formattedChat = {
       _id: chat._id,
@@ -1817,8 +1854,13 @@ router.get('/:chatId', auth, async (req, res) => {
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
       unreadCount,
-      lastActive: chat.updatedAt,
-      isUserActive
+      lastActive: isUserActive ? new Date() : chat.updatedAt,
+      isUserActive,
+      presence: {
+        isOnline: isUserActive,
+        lastSeen: lastSeen,
+        status: isUserActive ? 'online' : 'offline'
+      }
     };
 
     res.json(formattedChat);
@@ -1832,25 +1874,25 @@ router.get('/:chatId', auth, async (req, res) => {
 router.post('/:chatId/mark-read', auth, async (req, res) => {
   try {
     const { chatId } = req.params;
-    
-    const chat = await Chat.findById(chatId);
-    if (!chat) {
+
+    // Use atomic update to avoid full document validation on save (legacy enum values in messages can fail validation)
+    const result = await Chat.updateOne(
+      { _id: chatId },
+      { $set: { 'messages.$[m].readByAgent': true } },
+      {
+        arrayFilters: [{ 'm.sender': 'customer', 'm.readByAgent': { $ne: true } }],
+        runValidators: false
+      }
+    );
+
+    if (result.matchedCount === 0) {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
-    // Mark all customer messages as read
-    chat.messages = chat.messages.map(msg => {
-      if (msg.sender === 'customer') {
-        msg.readByAgent = true;
-      }
-      return msg;
-    });
-
-    await chat.save();
-    res.json({ success: true });
+    return res.json({ success: true, modifiedCount: result.modifiedCount });
   } catch (error) {
     console.error('Mark messages read error:', error);
-    res.status(500).json({ message: 'Failed to mark messages as read' });
+    return res.status(500).json({ message: 'Failed to mark messages as read' });
   }
 });
 
@@ -1939,96 +1981,13 @@ router.post('/:chatId/upload', auth, upload.single('file'), async (req, res) => 
 
 // Voice message upload endpoint  
 router.post('/:chatId/voice', auth, upload.single('voice'), async (req, res) => {
+  // Voice messages are disabled
   try {
-    const { chatId } = req.params;
-    const file = req.file;
-    
-    if (!file) {
-      return res.status(400).json({ message: 'No voice file uploaded' });
+    if (req.file && req.file.path) {
+      try { fs.unlinkSync(req.file.path); } catch {}
     }
-
-    // Validate it's an audio file
-    if (!file.mimetype.startsWith('audio/')) {
-      // Clean up invalid file
-      fs.unlinkSync(file.path);
-      return res.status(400).json({ message: 'Invalid file type. Only audio files are allowed.' });
-    }
-
-    // Find the chat
-    const chat = await Chat.findById(chatId);
-    if (!chat) {
-      // Clean up file
-      fs.unlinkSync(file.path);
-      return res.status(404).json({ message: 'Chat not found' });
-    }
-
-    // Check access permissions
-    const isAgent = !!req.agent;
-    const userId = req.user?.id;
-    const agentId = req.agent?.id;
-
-    if (!isAgent && chat.customer.toString() !== userId) {
-      fs.unlinkSync(file.path);
-      return res.status(403).json({ message: 'Access denied' });
-    }
-
-    if (isAgent && chat.assignedAgent && chat.assignedAgent.toString() !== agentId) {
-      fs.unlinkSync(file.path);
-      return res.status(403).json({ message: 'Access denied' });
-    }
-
-    // Create voice message
-    const messageId = new mongoose.Types.ObjectId();
-    const senderType = isAgent ? 'agent' : 'user';
-    const senderId = isAgent ? agentId : userId;
-
-    const message = {
-      _id: messageId,
-      senderId,
-      senderType,
-      type: 'voice',
-      content: 'Voice message',
-      fileUrl: `/uploads/chat/${file.filename}`,
-      fileName: file.originalname,
-      fileSize: file.size,
-      fileMimeType: file.mimetype,
-      timestamp: new Date(),
-      isRead: false
-    };
-
-    // Add message to chat
-    chat.messages.push(message);
-    chat.lastMessageTime = new Date();
-    await chat.save();
-
-    // Update active users
-    const userName = isAgent ? `Agent-${agentId}` : userId;
-    ActiveUsersService.updateUserActivity(userName);
-
-    res.json({
-      message: 'Voice message uploaded successfully',
-      messageId: messageId,
-      fileUrl: message.fileUrl,
-      duration: req.body.duration || null
-    });
-
-  } catch (error) {
-    console.error('Error uploading voice message:', error);
-    
-    // Clean up file if there was an error
-    if (req.file) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (unlinkError) {
-        console.error('Error cleaning up voice file:', unlinkError);
-      }
-    }
-    
-    res.status(500).json({ 
-      message: 'Failed to upload voice message',
-      error: error.message 
-    });
-  }
+  } catch {}
+  return res.status(403).json({ message: 'Voice messages are disabled.' });
 });
 
 // Edit message endpoint - for both agents and users

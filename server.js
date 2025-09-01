@@ -126,6 +126,11 @@ app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/logs', logRoutes); // Add logs API routes
 app.use('/api/first-contact', firstContactRoutes); // Add first contact API routes
 
+// Expose helper to clear fallback live queue cache
+if (typeof agentRoutes.clearLiveQueueFallbackCache === 'function') {
+  app.locals.clearLiveQueueFallbackCache = agentRoutes.clearLiveQueueFallbackCache;
+}
+
 // Health check endpoint with caching
 app.get('/api/health', (req, res) => {
   // Cache health check for 30 seconds
@@ -304,7 +309,7 @@ wss.on('connection', (ws) => {
         };
         
         // Set user as active when they connect
-        if (data.userId && data.userId !== 'agent') {
+  if (data.userId && data.role !== 'agent') {
           ActiveUsersService.setUserActive(data.userId);
           
           // Broadcast user online status to agents
@@ -327,7 +332,7 @@ wss.on('connection', (ws) => {
 
       // Handle user activity updates
       if (data.type === 'user_activity') {
-        if (data.userId && data.userId !== 'agent') {
+        if (data.userId && ws.clientInfo?.role !== 'agent') {
           ActiveUsersService.setUserActive(data.userId);
           
           // Optional: Broadcast activity to agents for live presence updates
@@ -571,7 +576,9 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (ws.clientInfo?.userId) {
-      ActiveUsersService.removeUser(ws.clientInfo.userId);
+      if (ws.clientInfo?.userId && ws.clientInfo?.role !== 'agent') {
+        ActiveUsersService.removeUser(ws.clientInfo.userId);
+      }
       
       // Broadcast user offline status to agents
       if (ws.clientInfo.userId !== 'agent') {

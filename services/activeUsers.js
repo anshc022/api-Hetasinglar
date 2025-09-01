@@ -19,7 +19,12 @@ const ActiveUsersService = {
 
   // Get all active users
   getActiveUsers() {
-    return activeUsers;
+    return activeUsers; // Map<userId, lastSeenDate>
+  },
+
+  // For compatibility: return a Set of active user IDs
+  getAllActiveUsers() {
+    return new Set(Array.from(activeUsers.keys()));
   },
 
   // Clean up inactive users

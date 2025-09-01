@@ -16,6 +16,27 @@ const crypto = require('crypto');
 const liveQueueCache = new Map();
 const cacheTimers = new Map();
 
+// Expose a helper to clear fallback live queue cache immediately
+function clearLiveQueueFallbackCache() {
+  try {
+    if (cacheTimers && cacheTimers.size) {
+      for (const [, timer] of cacheTimers) {
+        try { clearTimeout(timer); } catch {}
+      }
+      cacheTimers.clear();
+    }
+    if (liveQueueCache && liveQueueCache.size) {
+      liveQueueCache.clear();
+    }
+    console.log('🗑️  FALLBACK live-queue cache cleared');
+  } catch (e) {
+    console.warn('FALLBACK cache clear error:', e?.message || e);
+  }
+}
+
+// Attach on router so server can register it in app.locals
+router.clearLiveQueueFallbackCache = clearLiveQueueFallbackCache;
+
 // Agent login - moved before auth middleware
 router.post('/login', async (req, res) => {
   try {
@@ -1147,47 +1168,32 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
                 ]
               }
             ]
-          },
-          // Chat type classification
+          }
+        }
+      },
+      {
+        $addFields: {
+          // Chat type classification (separate stage to reference calculated fields)
           chatType: {
             $switch: {
               branches: [
                 { case: { $eq: ['$isInPanicRoom', true] }, then: 'panic' },
-        // If chat has unread messages, classify as queue (takes precedence over reminders)
-        { case: { $gt: ['$unreadCount', 0] }, then: 'queue' },
+                // If chat has unread messages, classify as queue (takes precedence over reminders)
+                { case: { $gt: ['$unreadCount', 0] }, then: 'queue' },
                 // Only show as reminder if 6+ hours have passed AND reminder not handled
                 { 
                   case: { 
                     $and: [
-          { $eq: ['$unreadCount', 0] },
+                      { $eq: ['$unreadCount', 0] },
                       { $ne: ['$reminderHandled', true] },
-                      { $gte: [
-                        {
-                          $cond: [
-                            { $ne: ['$lastCustomerResponse', null] },
-                            {
-                              $divide: [
-                                { $subtract: [new Date(), '$lastCustomerResponse'] },
-                                1000 * 60 * 60
-                              ]
-                            },
-                            {
-                              $divide: [
-                                { $subtract: [new Date(), '$updatedAt'] },
-                                1000 * 60 * 60
-                              ]
-                            }
-                          ]
-                        },
-                        6
-                      ]}
+                      { $gte: ['$hoursSinceLastCustomer', 6] }
                     ]
                   }, 
                   then: 'reminder' 
                 },
-        // Follow-up or snoozed reminders only if there are no unread customer messages
-        { case: { $and: [ { $eq: ['$requiresFollowUp', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' },
-        { case: { $and: [ { $ne: ['$reminderSnoozedUntil', null] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' }
+                // Follow-up or snoozed reminders only if there are no unread customer messages
+                { case: { $and: [ { $eq: ['$requiresFollowUp', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' },
+                { case: { $and: [ { $ne: ['$reminderSnoozedUntil', null] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' }
               ],
               default: 'queue'
             }
