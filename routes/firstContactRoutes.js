@@ -233,7 +233,32 @@ router.post('/create-contact', agentAuth, async (req, res) => {
       .populate('customerId', 'username email createdAt')
       .populate('escortId', 'firstName lastName stageName profileImage')
       .populate('agentId', 'name agentId');
-    
+
+    // Send WebSocket notification to all agents for real-time dashboard updates
+    if (req.app.locals.wss) {
+      const notification = {
+        type: 'new_chat_created',
+        chatId: populatedChat._id,
+        customerId: populatedChat.customerId._id,
+        escortId: populatedChat.escortId._id,
+        timestamp: new Date().toISOString(),
+        message: 'New first contact created',
+        chat: populatedChat
+      };
+
+      req.app.locals.wss.clients.forEach(client => {
+        if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
+          try {
+            client.send(JSON.stringify(notification));
+          } catch (error) {
+            console.error('Error sending WebSocket notification:', error);
+          }
+        }
+      });
+      
+      console.log('WebSocket notification sent for new chat:', populatedChat._id);
+    }
+
     res.status(201).json({
       success: true,
       message: 'First contact created successfully',
