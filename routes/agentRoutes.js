@@ -6,7 +6,6 @@ const router = express.Router();
 const Agent = require('../models/Agent');
 const EscortProfile = require('../models/EscortProfile');
 const Chat = require('../models/Chat');
-const reminderService = require('../services/reminderService');
 const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
@@ -70,23 +69,24 @@ router.post('/login', async (req, res) => {
         id: agent._id,
         agentId: agent.agentId,
         name: agent.name,
+        role: agent.role,
+        permissions: agent.permissions,
         stats: agent.stats
       }
     });
   } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ message: 'Login failed', error: error.message });
+    console.error('Error fetching escort profiles:', error);
+    res.status(500).json({
+      message: 'Failed to fetch escort profiles',
+      error: error.message
+    });
   }
 });
 
-// Get all escort profiles (PUBLIC - no auth required, with optional filters/pagination)
-router.get('/escorts', async (req, res) => {
+// Get active escort profiles (with optional filtering & pagination)
+router.get('/escorts/active', async (req, res) => {
   try {
-    // Client caching headers
-    res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=30');
-
-    // Parse optional filters/pagination
-    const page = Math.max(parseInt(req.query.page, 10) || 0, 0); // 0 = no pagination
+    const page = parseInt(req.query.page, 10) || 0;
     const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 0, 0);
     const gender = req.query.gender;
     const country = req.query.country;
@@ -99,32 +99,23 @@ router.get('/escorts', async (req, res) => {
 
     const isPaginated = page > 0 && pageSize > 0;
 
-    // Build cache key
     const baseKey = 'escorts:active';
     const filterKey = JSON.stringify({ gender, country, region });
     const cacheKey = isPaginated
       ? `${baseKey}:filters:${filterKey}:page:${page}:size:${pageSize}`
       : (filterKey === JSON.stringify({}) ? `${baseKey}:all` : `${baseKey}:filters:${filterKey}`);
 
-    // Check cache first
     let profiles = cache.get(cacheKey);
     if (!profiles) {
       console.log(`Cache miss - fetching escorts from database for key ${cacheKey}`);
-
-      // Base query with minimal projection for performance
       let query = EscortProfile.find(filter)
         .select('username firstName gender profileImage profilePicture imageUrl country region status createdAt')
         .sort({ createdAt: -1 })
         .lean();
-
-      // Apply pagination only if requested
       if (isPaginated) {
         query = query.skip((page - 1) * pageSize).limit(pageSize);
       }
-
       profiles = await query.exec();
-
-      // If paginated, include metadata in headers (array body for compatibility)
       if (isPaginated) {
         try {
           const total = await EscortProfile.countDocuments(filter);
@@ -137,21 +128,16 @@ router.get('/escorts', async (req, res) => {
           console.log('Count error (non-fatal):', countErr.message);
         }
       }
-
-      // Cache for 2 minutes (120000 ms)
       cache.set(cacheKey, profiles, 120 * 1000);
       console.log(`Cached ${profiles.length} escort profiles for key ${cacheKey}`);
     } else {
       console.log(`Cache hit - returning ${profiles.length} escort profiles for key ${cacheKey}`);
     }
-
-    // ETag for conditional GETs
     const etag = crypto.createHash('md5').update(JSON.stringify(profiles)).digest('hex');
     res.set('ETag', etag);
     if (req.headers['if-none-match'] === etag) {
       return res.status(304).end();
     }
-
     res.json(profiles);
   } catch (error) {
     console.error('Error fetching escort profiles:', error);
@@ -292,7 +278,7 @@ router.get('/dashboard', async (req, res) => {
     }
 
     // Get agent data with optimized query - only select needed fields
-    const agent = await Agent.findById(agentId).select('stats reminders name agentId').lean();
+    const agent = await Agent.findById(agentId).select('stats name agentId').lean();
     if (!agent) {
       return res.status(404).json({ message: 'Agent not found' });
     }
@@ -307,7 +293,6 @@ router.get('/dashboard', async (req, res) => {
         totalMessagesSent: agent.stats?.totalMessagesSent || 0,
         activeCustomers: agent.stats?.activeCustomers || 0
       },
-      reminders: agent.reminders || [],
       agent: {
         name: agent.name,
         agentId: agent.agentId
@@ -489,29 +474,6 @@ router.get('/escorts/:id', agentAuth, async (req, res) => {
   } catch (error) {
     console.error('Error fetching escort profile:', error);
     res.status(500).json({ message: 'Failed to fetch escort profile', error: error.message });
-  }
-});
-
-// Mark reminder as complete
-router.post('/reminders/:id/complete', async (req, res) => {
-  try {
-    const agent = await Agent.findById(req.agent._id);
-    if (!agent) {
-      return res.status(404).json({ message: 'Agent not found' });
-    }
-
-    const reminder = agent.reminders.id(req.params.id);
-    if (!reminder) {
-      return res.status(404).json({ message: 'Reminder not found' });
-    }
-
-    reminder.completed = true;
-    await agent.save();
-
-    res.json(reminder);
-  } catch (error) {
-    console.error('Error marking reminder as complete:', error);
-    res.status(500).json({ message: 'Failed to mark reminder as complete' });
   }
 });
 
@@ -936,7 +898,7 @@ router.get('/chats/export-stats', agentAuth, async (req, res) => {
   }
 });
 
-// Update chat info (for reminder system)
+// Update chat info
 router.patch('/chats/:chatId/info', agentAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
@@ -963,9 +925,6 @@ router.patch('/chats/:chatId/info', agentAuth, async (req, res) => {
       message: 'Chat info updated successfully',
       chat: {
         _id: chat._id,
-        reminderHandled: chat.reminderHandled,
-        reminderHandledAt: chat.reminderHandledAt,
-        reminderSnoozedUntil: chat.reminderSnoozedUntil,
         updatedAt: chat.updatedAt
       }
     });
@@ -1028,7 +987,7 @@ router.post('/chats/:chatId/assign', agentAuth, async (req, res) => {
   }
 });
 
-// Get chats for live queue (used by reminder system) - ULTRA OPTIMIZED with Fallback Cache
+// Get chats for live queue - ULTRA OPTIMIZED with Fallback Cache
 router.get('/chats/live-queue', agentAuth, async (req, res) => {
   const startTime = Date.now();
   const agentId = req.agent?._id;
@@ -1055,7 +1014,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     console.log(`❌ Cache MISS: global live-queue - generating fresh data`);
 
     // Super-optimized aggregation - minimal operations for max speed
-    // Modified: All agents can see all chats with unread messages, reminders, panic room, or new status
+    // Show chats that need agent attention: new, active, assigned, panic room, or with unread messages
     const chats = await Chat.aggregate([
       {
         $match: {
@@ -1064,12 +1023,29 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
             { status: 'assigned' },
             { status: 'active' },
             { isInPanicRoom: true },
-            { requiresFollowUp: true },
-            { reminderHandled: { $ne: true } }, // Changed: Show chats where reminderHandled is not true
-            { reminderSnoozedUntil: { $exists: true } },
-            // Add condition to show chats with any messages (for debugging)
-            { 'messages.0': { $exists: true } }
+            // Chats with unread customer messages
+            { 
+              messages: {
+                $elemMatch: {
+                  sender: 'customer',
+                  readByAgent: false
+                }
+              }
+            },
+            // Chats with active reminder but currently no unread (need follow-up visibility)
+            { reminderActive: true }
           ]
+        }
+      },
+      {
+        // Lightweight calculation: compute hours since last customer response for reminder logic
+        $addFields: {
+          hoursSinceLastCustomer: {
+            $divide: [
+              { $subtract: [new Date(), { $ifNull: ['$lastCustomerResponse', '$createdAt'] }] },
+              1000 * 60 * 60
+            ]
+          }
         }
       },
       {
@@ -1109,65 +1085,17 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
               branches: [
                 // Panic room has highest priority (5)
                 { case: { $eq: ['$isInPanicRoom', true] }, then: 5 },
-                // Unhandled reminders have high priority (4) - BUT ONLY after 6+ hours
-                { 
-                  case: { 
-                    $and: [
-          // Do not treat as reminder if there are unread customer messages
-          { $eq: ['$unreadCount', 0] },
-                      { $ne: ['$reminderHandled', true] },
-                      { $gte: [
-                        {
-                          $cond: [
-                            { $ne: ['$lastCustomerResponse', null] },
-                            {
-                              $divide: [
-                                { $subtract: [new Date(), '$lastCustomerResponse'] },
-                                1000 * 60 * 60
-                              ]
-                            },
-                            {
-                              $divide: [
-                                { $subtract: [new Date(), '$updatedAt'] },
-                                1000 * 60 * 60
-                              ]
-                            }
-                          ]
-                        },
-                        6
-                      ]}
-                    ]
-                  }, 
-                  then: 4 
-                },
-                // Follow-up required chats also high priority (4)
-        // Only if there are no unread customer messages
-        { case: { $and: [ { $eq: ['$requiresFollowUp', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 4 },
-                // Many unread messages have medium-high priority (3)
-                { case: { $gt: [{ $size: { $filter: { input: '$messages', as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 5] }, then: 3 },
-                // Some unread messages have medium priority (2)
-                { case: { $gt: [{ $size: { $filter: { input: '$messages', as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 0] }, then: 2 }
+                // Active reminder with no unread messages (treat high priority just below panic)
+                { case: { $and: [ { $eq: ['$reminderActive', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 4 },
+                // Many unread messages have high priority (4)
+                { case: { $gt: ['$unreadCount', 5] }, then: 4 },
+                // Some unread messages have medium-high priority (3)
+                { case: { $gt: ['$unreadCount', 2] }, then: 3 },
+                // Any unread messages have medium priority (2)
+                { case: { $gt: ['$unreadCount', 0] }, then: 2 }
               ],
               default: 1
             }
-          },
-          // Calculate hours since last customer message for reminder logic
-          hoursSinceLastCustomer: {
-            $cond: [
-              { $ne: ['$lastCustomerResponse', null] },
-              {
-                $divide: [
-                  { $subtract: [new Date(), '$lastCustomerResponse'] },
-                  1000 * 60 * 60 // Convert to hours
-                ]
-              },
-              {
-                $divide: [
-                  { $subtract: [new Date(), '$updatedAt'] },
-                  1000 * 60 * 60 // Fallback to updatedAt
-                ]
-              }
-            ]
           }
         }
       },
@@ -1178,24 +1106,12 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
             $switch: {
               branches: [
                 { case: { $eq: ['$isInPanicRoom', true] }, then: 'panic' },
-                // If chat has unread messages, classify as queue (takes precedence over reminders)
+                // Unread customer messages -> queue
                 { case: { $gt: ['$unreadCount', 0] }, then: 'queue' },
-                // Only show as reminder if 6+ hours have passed AND reminder not handled
-                { 
-                  case: { 
-                    $and: [
-                      { $eq: ['$unreadCount', 0] },
-                      { $ne: ['$reminderHandled', true] },
-                      { $gte: ['$hoursSinceLastCustomer', 6] }
-                    ]
-                  }, 
-                  then: 'reminder' 
-                },
-                // Follow-up or snoozed reminders only if there are no unread customer messages
-                { case: { $and: [ { $eq: ['$requiresFollowUp', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' },
-                { case: { $and: [ { $ne: ['$reminderSnoozedUntil', null] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' }
+                // Active reminder (no unread)
+                { case: { $and: [ { $eq: ['$reminderActive', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' }
               ],
-              default: 'queue'
+              default: 'idle'
             }
           }
         }
@@ -1306,11 +1222,6 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           customerName: 1,
           lastCustomerResponse: 1,
           lastAgentResponse: 1,
-          requiresFollowUp: 1,
-          followUpDue: 1,
-          reminderHandled: 1,
-          reminderHandledAt: 1,
-          reminderSnoozedUntil: 1,
           isInPanicRoom: 1,
           panicRoomEnteredAt: 1,
           panicRoomReason: 1,
@@ -1319,8 +1230,11 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           updatedAt: 1,
           unreadCount: 1,
           priority: 1,
-          chatType: 1,
+          reminderActive: 1,
+          reminderCount: 1,
+          lastReminderAt: 1,
           hoursSinceLastCustomer: 1,
+          chatType: 1,
           lastMessage: {
             message: {
               $cond: [
@@ -1506,11 +1420,6 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
           customerName: 1,
           lastCustomerResponse: 1,
           lastAgentResponse: 1,
-          requiresFollowUp: 1,
-          followUpDue: 1,
-          reminderHandled: 1,
-          reminderHandledAt: 1,
-          reminderSnoozedUntil: 1,
           isInPanicRoom: { $ifNull: ['$isInPanicRoom', false] },
           panicRoomEnteredAt: 1,
           panicRoomMovedAt: '$panicRoomEnteredAt',
@@ -1561,20 +1470,6 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
     console.error('Error fetching escort chats:', error);
     res.status(500).json({ 
       message: 'Failed to fetch escort chats',
-      error: error.message 
-    });
-  }
-});
-
-// Get reminder statistics
-router.get('/reminders/stats', agentAuth, async (req, res) => {
-  try {
-    const stats = await reminderService.getStats();
-    res.json(stats);
-  } catch (error) {
-    console.error('Error fetching reminder stats:', error);
-    res.status(500).json({ 
-      message: 'Failed to fetch reminder statistics',
       error: error.message 
     });
   }
@@ -2204,18 +2099,15 @@ router.get('/agent-customers/:agentId', agentAuth, async (req, res) => {
         registrationDate: customer.registrationDate,
         lastActivity: customer.customerId?.lastActive || customer.lastActivity,
         isActive: customer.customerId?.isActive || false,
-        totalEarnings: customer.totalEarnings || 0,
-        totalChats: customer.totalChats || 0
+        totalChats: customer.totalChats || 0,
+        totalEarnings: customer.totalEarnings || 0
       };
     });
-    
-    res.json({ 
-      success: true,
-      customers
-    });
+
+    return res.json({ success: true, customers });
   } catch (error) {
     console.error('Error fetching assigned customers:', error);
-    res.status(500).json({ message: 'Failed to fetch assigned customers', error: error.message });
+    return res.status(500).json({ message: 'Failed to fetch assigned customers', error: error.message });
   }
 });
 

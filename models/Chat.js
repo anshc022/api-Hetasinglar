@@ -22,7 +22,8 @@ const chatSchema = new mongoose.Schema({
     _id: { type: mongoose.Schema.Types.ObjectId, default: () => new mongoose.Types.ObjectId() },
     sender: { type: String, enum: ['agent', 'customer'] },
     message: String,
-    messageType: { type: String, enum: ['text', 'image'], default: 'text' },
+  // Voice removed; legacy 'voice' entries will be coerced to 'text' on edit/delete
+  messageType: { type: String, enum: ['text', 'image'], default: 'text' },
     imageData: String, // Base64 encoded image data
     mimeType: String, // Image MIME type
     filename: String, // Original filename
@@ -49,19 +50,14 @@ const chatSchema = new mongoose.Schema({
   customerName: String,
   lastCustomerResponse: Date,
   lastAgentResponse: Date,
-  requiresFollowUp: { type: Boolean, default: false },  followUpDue: Date,
   comments: [{ 
     text: String, 
     timestamp: { type: Date, default: Date.now },
     agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
-    agentName: String
+    agentName: String,
+    isGeneral: { type: Boolean, default: false }
   }],
   domain: String,
-  
-  // New reminder system fields
-  reminderHandled: { type: Boolean, default: false },
-  reminderHandledAt: Date,
-  reminderSnoozedUntil: Date,
   
   // Panic Room fields
   isInPanicRoom: { type: Boolean, default: false },
@@ -75,14 +71,22 @@ const chatSchema = new mongoose.Schema({
   }],
   panicRoomEnteredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
   
+  // Reminder system fields (lightweight, performance-friendly)
+  // reminderActive: true when a reminder should be shown in Live Dashboard
+  reminderActive: { type: Boolean, default: false, index: true },
+  // firstReminderAt: when the first reminder for this inactivity cycle was triggered
+  firstReminderAt: { type: Date },
+  // lastReminderAt: when the most recent reminder was triggered
+  lastReminderAt: { type: Date, index: true },
+  // Number of reminders sent in the current inactivity cycle
+  reminderCount: { type: Number, default: 0 },
+  // Configurable per-chat interval (hours) if ever needed (default 4h)
+  reminderIntervalHours: { type: Number, default: 4 },
+  // When customer finally replied resolving the reminder cycle
+  reminderResolvedAt: { type: Date },
+  
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
-  reminders: [{
-    text: String,
-    dueDate: Date,
-    completed: { type: Boolean, default: false },
-    type: { type: String, enum: ['followup', 'auto', 'manual'], default: 'manual' }
-  }],
   assignedHistory: [{
     agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
     assignedAt: { type: Date, default: Date.now }
@@ -106,22 +110,9 @@ chatSchema.pre('save', function(next) {
       const lastMessage = this.messages[this.messages.length - 1];
       
       if (lastMessage.sender === 'customer') {
-        // When customer sends a message, reset any existing follow-up timers
-        this.requiresFollowUp = false;
-        this.followUpDue = undefined;
-        
-        // Set reminder flags since we need to track agent response time
-        this.reminderHandled = false;
-        this.reminderHandledAt = undefined;
-        this.reminderSnoozedUntil = undefined;
-        
+        // Customer message - no special processing needed
       } else if (lastMessage.sender === 'agent') {
         this.lastAgentResponse = lastMessage.timestamp;
-        
-        // Clear any existing reminder flags since agent responded
-        this.reminderHandled = true;
-        this.reminderHandledAt = new Date();
-        this.reminderSnoozedUntil = undefined;
       }
     }
   }

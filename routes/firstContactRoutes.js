@@ -57,6 +57,52 @@ router.get('/new-customers', agentAuth, async (req, res) => {
   }
 });
 
+// Get all customers with search and pagination
+router.get('/all-customers', agentAuth, async (req, res) => {
+  try {
+    const { search, limit = 50, page = 1 } = req.query;
+    
+    let query = {
+      status: 'active'
+    };
+    
+    // Add search functionality
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { username: searchRegex },
+        { email: searchRegex },
+        { firstName: searchRegex },
+        { lastName: searchRegex }
+      ];
+    }
+    
+    const skip = (page - 1) * limit;
+    
+    // Get all customers
+    const customers = await User.find(query)
+      .select('_id username email firstName lastName createdAt registrationDomain lastActiveDate')
+      .sort({ createdAt: -1, lastActiveDate: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+    
+    // Get total count for pagination
+    const totalCount = await User.countDocuments(query);
+    
+    res.json({
+      customers,
+      totalCount,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalCount / limit),
+      hasMore: (page * limit) < totalCount
+    });
+    
+  } catch (error) {
+    console.error('Error fetching all customers:', error);
+    res.status(500).json({ message: 'Failed to fetch customers' });
+  }
+});
+
 // Get available escort profiles for assignment
 router.get('/available-escorts', agentAuth, async (req, res) => {
   try {

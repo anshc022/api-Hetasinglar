@@ -71,11 +71,7 @@ const agentSchema = new mongoose.Schema({
     totalChatSessions: { type: Number, default: 0 },
     totalCreditsGenerated: { type: Number, default: 0 }
   },
-  reminders: [{
-    message: String,
-    dueDate: Date,
-    completed: { type: Boolean, default: false }
-  }],  permissions: {
+  permissions: {
     canMessage: { type: Boolean, default: true },
     canModerate: { type: Boolean, default: false },
     canViewStats: { type: Boolean, default: true },

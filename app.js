@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const { router: authRoutes } = require('./auth');
 const agentRoutes = require('./routes/agentRoutes');
 const escortRoutes = require('./routes/escortRoutes');
 const chatRoutes = require('./routes/chatRoutes');
@@ -17,6 +18,7 @@ app.use(cors({
 app.use(express.json());
 
 // Mount routes - ensure paths match frontend requests
+app.use('/api/auth', authRoutes); // Add auth routes
 app.use('/api/agents', agentRoutes);
 app.use('/api/escorts', escortRoutes);
 app.use('/api/chats', chatRoutes); // Ensure this matches the frontend API call

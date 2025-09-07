@@ -16,6 +16,17 @@ const userSchema = new mongoose.Schema({
     trim: true,
     lowercase: true
   },
+  emailVerified: {
+    type: Boolean,
+    default: false
+  },
+  emailVerificationToken: String,
+  emailVerificationExpires: Date,
+  emailOTP: String,
+  emailOTPExpires: Date,
+  // Password reset fields
+  passwordResetToken: String,
+  passwordResetExpires: Date,
   full_name: {
     type: String,
     trim: true
@@ -82,7 +93,8 @@ const userSchema = new mongoose.Schema({
       date: { type: Date, default: Date.now },
       amount: { type: Number, required: true },
       chatId: { type: mongoose.Schema.Types.ObjectId, ref: 'Chat' },
-      messageType: { type: String, enum: ['text', 'image', 'voice'], default: 'text' }
+  // Voice removed; legacy usageHistory entries allowed through route coercion
+  messageType: { type: String, enum: ['text', 'image'], default: 'text' }
     }],
     lastPurchaseDate: Date,
     lastUsageDate: Date

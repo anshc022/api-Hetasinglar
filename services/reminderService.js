@@ -88,6 +88,11 @@ class ReminderService {
             $or: [
               { reminderSnoozedUntil: { $exists: false } },
               { reminderSnoozedUntil: { $lt: new Date() } }
+            ],
+            // Exclude chats already marked with an active reminder (reminderHandled = false)
+            $or: [
+              { reminderHandled: { $exists: false } },
+              { reminderHandled: true }
             ]
           }
         },
@@ -199,17 +204,16 @@ class ReminderService {
       const reminderCount = this.getReminderCount(hoursSinceLastMessage);
 
       await Chat.findByIdAndUpdate(chatId, {
-        $unset: {
-          reminderSnoozedUntil: 1
-        },
+        $unset: { reminderSnoozedUntil: 1 },
         $set: {
+          // Mark as needing attention now (UI can highlight)
           reminderHandled: false,
           reminderHandledAt: undefined,
           reminderPriority: priority,
-          reminderCount: reminderCount,
+          reminderCount,
           updatedAt: new Date()
         }
-      });
+      }, { new: true });
 
       console.log(`Created new ${priority} priority reminder for chat ${chatId} (${reminderCount} intervals)`);
     } catch (error) {

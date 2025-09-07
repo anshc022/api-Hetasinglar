@@ -19,11 +19,13 @@ const firstContactRoutes = require('./routes/firstContactRoutes');
 const createDefaultAdmin = require('./initAdmin');
 const initializeCommissionSystem = require('./initCommissionSystem');
 const ActiveUsersService = require('./services/activeUsers');
-const reminderService = require('./services/reminderService');
 const Chat = require('./models/Chat');
 const Agent = require('./models/Agent');
 const Subscription = require('./models/Subscription');
 const EscortProfile = require('./models/EscortProfile');
+// Reminder system constants
+const REMINDER_CHECK_INTERVAL_MS = 60 * 1000; // run every 1 minute
+const DEFAULT_REMINDER_INTERVAL_HOURS = 4; // 4 hours inactivity
 
 const app = express();
 const server = http.createServer(app);
@@ -146,8 +148,7 @@ app.get('/api/health', (req, res) => {
     memory: process.memoryUsage(),
     services: {
       database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      websocket: wss.clients.size,
-      reminders: 'active'
+      websocket: wss.clients.size
     }
   };
   
@@ -205,6 +206,89 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+// Lightweight reminder scheduler implementation
+function startReminderScheduler() {
+  console.log('⏰ Reminder scheduler starting...');
+  setInterval(async () => {
+    try {
+      const now = new Date();
+      const intervalMs = DEFAULT_REMINDER_INTERVAL_HOURS * 60 * 60 * 1000;
+      const threshold = new Date(Date.now() - intervalMs);
+
+      // Find candidate chats: have an agent message but no customer reply for interval
+      const candidates = await Chat.find({
+        // Only for active/assigned chats not closed
+        status: { $in: ['new', 'assigned', 'active'] },
+        // Customer inactivity threshold
+        $or: [
+          { lastCustomerResponse: { $lte: threshold } },
+          { lastCustomerResponse: { $exists: false }, createdAt: { $lte: threshold } }
+        ],
+        // Ensure at least one agent message exists
+        messages: { $elemMatch: { sender: 'agent' } },
+        // Customer has NOT responded after agent message in this cycle
+        reminderActive: { $in: [false, null] }
+      }).select('_id lastCustomerResponse lastAgentResponse reminderActive reminderCount lastReminderAt reminderIntervalHours createdAt');
+
+      let activated = 0;
+      for (const chat of candidates) {
+        const intervalHours = chat.reminderIntervalHours || DEFAULT_REMINDER_INTERVAL_HOURS;
+        const intervalMsCurrent = intervalHours * 60 * 60 * 1000;
+        const lastCustomer = chat.lastCustomerResponse || chat.createdAt;
+        if (Date.now() - lastCustomer.getTime() >= intervalMsCurrent) {
+          await Chat.findByIdAndUpdate(chat._id, {
+            $set: {
+              reminderActive: true,
+              lastReminderAt: now,
+              firstReminderAt: chat.firstReminderAt || now
+            },
+            $inc: { reminderCount: 1 }
+          });
+          activated++;
+        }
+      }
+
+      // Handle escalated reminders (already active but still no customer response)
+      const activeChats = await Chat.find({
+        reminderActive: true,
+        status: { $in: ['new', 'assigned', 'active'] }
+      }).select('_id lastCustomerResponse lastReminderAt reminderCount reminderIntervalHours createdAt');
+
+      let escalated = 0;
+      for (const chat of activeChats) {
+        const intervalHours = chat.reminderIntervalHours || DEFAULT_REMINDER_INTERVAL_HOURS;
+        const intervalMsCurrent = intervalHours * 60 * 60 * 1000;
+        const lastCustomer = chat.lastCustomerResponse || chat.createdAt;
+        // If customer still inactive and enough time since last reminder
+        if (Date.now() - lastCustomer.getTime() >= (chat.reminderCount + 1) * intervalMsCurrent) {
+          await Chat.findByIdAndUpdate(chat._id, {
+            $set: { lastReminderAt: now },
+            $inc: { reminderCount: 1 }
+          });
+          escalated++;
+        }
+      }
+
+      if ((activated + escalated) > 0) {
+        console.log(`🔔 Reminder scheduler: activated=${activated}, escalated=${escalated}`);
+        // Broadcast a lightweight update event to agents so they can refetch live queue
+        if (app.locals.wss) {
+          const payload = JSON.stringify({ type: 'reminder_updates', activated, escalated, timestamp: now.toISOString() });
+          app.locals.wss.clients.forEach(client => {
+            try {
+              if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
+                client.send(payload);
+              }
+            } catch {}
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Reminder scheduler error:', err.message);
+    }
+  }, REMINDER_CHECK_INTERVAL_MS);
+}
+
 mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3sfyYCq@dating.flel6.mongodb.net/hetasinglar?retryWrites=true&w=majority', {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -220,10 +304,6 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3
   console.log('📊 Database Status: Connected');
   await createDefaultAdmin(); // Initialize default admin account
   await initializeCommissionSystem(); // Initialize commission and affiliate system
-  
-  // Start the reminder service
-  reminderService.start(30); // Check every 30 minutes
-  console.log('⏰ Reminder service started');
 
   // Warm-up: Prefetch public escorts list into cache to reduce first-hit latency
   try {
@@ -242,6 +322,9 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3
     console.log('⚠️  Escorts cache warm-up failed:', warmErr.message);
   }
   console.log('🔄 System initialization complete');
+
+  // Start lightweight reminder scheduler AFTER DB connection
+  startReminderScheduler();
 }).catch(err => {
   console.error('🔴 MongoDB connection error:', err);
   console.log('❌ Database Status: Failed to connect');
@@ -652,10 +735,7 @@ process.on('SIGINT', () => {
   console.log('\n🛑 SHUTDOWN ALERT - SIGINT received');
   console.log('━'.repeat(50));
   console.log('⏰ Shutdown initiated at:', new Date().toISOString());
-  console.log('🔄 Stopping reminder service...');
-  reminderService.stop();
-  console.log('✅ Reminder service stopped');
-  console.log('🔌 Closing WebSocket connections...');
+  console.log(' Closing WebSocket connections...');
   wss.close();
   console.log('✅ WebSocket server closed');
   console.log('💾 Closing database connections...');
@@ -670,10 +750,7 @@ process.on('SIGTERM', () => {
   console.log('\n🛑 SHUTDOWN ALERT - SIGTERM received');
   console.log('━'.repeat(50));
   console.log('⏰ Shutdown initiated at:', new Date().toISOString());
-  console.log('🔄 Stopping reminder service...');
-  reminderService.stop();
-  console.log('✅ Reminder service stopped');
-  console.log('🔌 Closing WebSocket connections...');
+  console.log(' Closing WebSocket connections...');
   wss.close();
   console.log('✅ WebSocket server closed');
   console.log('💾 Closing database connections...');

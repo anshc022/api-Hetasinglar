@@ -215,7 +215,13 @@ router.get('/:chatId/notes', async (req, res) => {
     const chat = await Chat.findById(chatId).select('comments');
     if (!chat) return res.status(404).json({ message: 'Chat not found' });
     const notes = (chat.comments || []).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-    res.json(notes);
+    // Explicit no-cache so browser doesn't reuse empty 304 response
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('Surrogate-Control', 'no-store');
+    // Unified shape expected by frontend
+    res.json({ comments: notes, count: notes.length, ts: Date.now() });
   } catch (error) {
     console.error('Get chat notes error:', error);
     res.status(500).json({ message: 'Failed to fetch chat notes' });
@@ -236,11 +242,15 @@ router.post('/:chatId/notes', async (req, res) => {
       return res.status(400).json({ message: 'Invalid chat ID' });
     }
 
+    // Check if this is a general note based on text prefix or explicit flag
+    const isGeneral = text.startsWith('[General]') || req.body.isGeneral === true;
+
     const note = {
       text,
       timestamp: new Date(),
       agentId: req.agent._id,
-      agentName: req.agent.name || 'Agent'
+      agentName: req.agent.name || 'Agent',
+      isGeneral: isGeneral
     };
 
     // Atomic push without triggering full document validation
@@ -442,8 +452,6 @@ router.get('/live-queue/:escortId?/:chatId?', async (req, res) => {
         isInPanicRoom: chat.isInPanicRoom || false,
         panicRoomReason: chat.panicRoomReason,
         panicRoomMovedAt: chat.panicRoomMovedAt,
-        requiresFollowUp: chat.requiresFollowUp || false,
-        followUpDue: chat.followUpDue,
         lastMessage: lastMessage ? {
           message: lastMessage.message,
           messageType: lastMessage.messageType,
@@ -802,7 +810,7 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
     let { message, messageType = 'text', imageData, mimeType, filename } = req.body;
 
     // Enforce allowed message types only
-    const allowedTypes = new Set(['text', 'image']);
+  const allowedTypes = new Set(['text', 'image']);
     if (!allowedTypes.has(messageType)) {
       return res.status(400).json({ message: 'Invalid message type' });
     }
@@ -865,15 +873,14 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
     // Update chat activity timestamps
     if (req.agent) {
       chatUpdate.$set.lastAgentResponse = new Date();
-      // Clear reminder flags when agent responds
-      chatUpdate.$set.reminderHandled = true;
-      chatUpdate.$set.reminderHandledAt = new Date();
-      chatUpdate.$unset = { reminderSnoozedUntil: 1 };
+  // If agent is replying while a reminder is active, keep reminderActive until customer replies
+  // (No change to reminderActive here to ensure visibility until customer response)
     } else {
       chatUpdate.$set.lastCustomerResponse = new Date();
-      // Reset reminder flags when customer sends new message - agent needs to respond again
-      chatUpdate.$set.reminderHandled = false;
-      chatUpdate.$unset = { reminderHandledAt: 1, reminderSnoozedUntil: 1 };
+  // Customer replied: resolve any active reminder cycle instantly
+  chatUpdate.$set.reminderActive = false;
+  chatUpdate.$set.reminderResolvedAt = new Date();
+  chatUpdate.$set.reminderCount = 0; // reset cycle count
     }
 
     // Update chat status if needed
@@ -888,7 +895,7 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
     // ⚡ INSTANT RESPONSE: Only save message and respond immediately
     await Chat.findByIdAndUpdate(chatId, chatUpdate, { new: false });
 
-    // ⚡ INSTANT CACHE INVALIDATION - Clear live queue cache immediately to reflect reminder/message changes
+    // ⚡ INSTANT CACHE INVALIDATION - Clear live queue cache immediately
     try {
       const cacheKeys = [
         // live queue update snapshots (scoped + global)
@@ -1180,7 +1187,7 @@ router.get('/escorts/:escortId/chats', auth, async (req, res) => {
   }
 });
 
-// Get chat statistics and reminders
+// Get chat statistics
 router.get('/stats', auth, async (req, res) => {
   try {
     const chats = await Chat.find({
@@ -1189,18 +1196,8 @@ router.get('/stats', auth, async (req, res) => {
     }).populate('customerId', 'username')
       .populate('escortId', 'firstName');
 
-    // Get all chats requiring follow-up
-    const followUps = chats.filter(chat => 
-      chat.requiresFollowUp && 
-      chat.followUpDue && 
-      new Date(chat.followUpDue) <= new Date()
-    ).map(chat => ({
-      _id: chat._id,
-      customerName: chat.customerId?.username || chat.customerName,
-      escortName: chat.escortId?.firstName,
-      lastMessage: chat.messages[chat.messages.length - 1]?.message,
-      followUpDue: chat.followUpDue
-    }));
+    // No follow-ups needed with new system
+    const followUps = [];
 
     res.json({
       totalChats: chats.length,
@@ -1703,13 +1700,7 @@ router.get('/live-queue-updates', auth, async (req, res) => {
               0
             ]
           },
-          lastMessage: { $arrayElemAt: ['$messages', -1] },
-          requiresFollowUp: {
-            $and: [
-              { $eq: ['$requiresFollowUp', true] },
-              { $lte: ['$followUpDue', new Date()] }
-            ]
-          }
+          lastMessage: { $arrayElemAt: ['$messages', -1] }
         }
       },
       
@@ -1730,8 +1721,6 @@ router.get('/live-queue-updates', auth, async (req, res) => {
           isInPanicRoom: { $ifNull: ['$isInPanicRoom', false] },
           panicRoomReason: 1,
           panicRoomMovedAt: 1,
-          requiresFollowUp: 1,
-          followUpDue: 1,
           lastMessage: {
             $cond: [
               { $ne: ['$lastMessage', null] },
@@ -2167,6 +2156,13 @@ router.delete('/:chatId/message/:messageIdOrIndex', auth, async (req, res) => {
     messageToDelete.isDeleted = true;
     messageToDelete.deletedAt = new Date();
     messageToDelete.message = '[This message has been deleted]';
+    
+    // Clean up any legacy voice messageTypes before saving to prevent validation errors
+    chat.messages.forEach(msg => {
+      if (msg.messageType === 'voice') {
+        msg.messageType = 'text';
+      }
+    });
     
     // Important: Do NOT refund coins to users when they delete messages
     // Users paid for the message sending service, deletion doesn't reverse that
