@@ -24,7 +24,23 @@ router.get('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid escort ID format' });
     }
 
-    const logs = await EscortLog.find({ escortId }).sort({ createdAt: -1 });
+    const logs = await EscortLog.find({ escortId }).sort({ createdAt: -1 }).lean();
+    
+    // Populate agent names for logs
+    const Agent = require('../models/Agent');
+    for (let log of logs) {
+      if (log.createdBy && log.createdBy.id) {
+        try {
+          const agent = await Agent.findById(log.createdBy.id).select('name agentId');
+          if (agent) {
+            log.createdBy.name = agent.name || agent.agentId;
+          }
+        } catch (err) {
+          console.log('Could not find agent for log:', log._id);
+        }
+      }
+    }
+    
     res.json({ success: true, logs });
   } catch (error) {
     console.error('Error fetching escort logs:', error);
@@ -49,13 +65,20 @@ router.post('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
 
     // Allow log creation even if escort doesn't exist in escorts collection
     // This handles cases where escorts are deleted but still referenced in chats
+    
+    // Get agent information to include name
+    const Agent = require('../models/Agent');
+    const agent = await Agent.findById(agentId).select('name agentId');
+    const agentName = agent ? (agent.name || agent.agentId) : 'Unknown Agent';
+    
     const newLog = new EscortLog({
       escortId,
       category,
       content,
       createdBy: {
         id: agentId,
-        type: 'Agent'
+        type: 'Agent',
+        name: agentName
       }
     });
 
@@ -117,7 +140,23 @@ router.get('/user/:userId', isAuthenticated, isAgent, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid user ID format' });
     }
 
-    const logs = await UserLog.find({ userId }).sort({ createdAt: -1 });
+    const logs = await UserLog.find({ userId }).sort({ createdAt: -1 }).lean();
+    
+    // Populate agent names for logs
+    const Agent = require('../models/Agent');
+    for (let log of logs) {
+      if (log.createdBy && log.createdBy.id) {
+        try {
+          const agent = await Agent.findById(log.createdBy.id).select('name agentId');
+          if (agent) {
+            log.createdBy.name = agent.name || agent.agentId;
+          }
+        } catch (err) {
+          console.log('Could not find agent for log:', log._id);
+        }
+      }
+    }
+    
     res.json({ success: true, logs });
   } catch (error) {
     console.error('Error fetching user logs:', error);
@@ -145,13 +184,19 @@ router.post('/user/:userId', isAuthenticated, isAgent, async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
+    // Get agent information to include name
+    const Agent = require('../models/Agent');
+    const agent = await Agent.findById(agentId).select('name agentId');
+    const agentName = agent ? (agent.name || agent.agentId) : 'Unknown Agent';
+
     const newLog = new UserLog({
       userId,
       category,
       content,
       createdBy: {
         id: agentId,
-        type: 'Agent'
+        type: 'Agent',
+        name: agentName
       }
     });
 
@@ -200,6 +245,68 @@ router.put('/user/:logId', isAuthenticated, isAgent, async (req, res) => {
     res.json({ success: true, message: 'Log updated successfully', log });
   } catch (error) {
     console.error('Error updating user log:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Delete an escort log
+router.delete('/escort/:logId', isAuthenticated, isAgent, async (req, res) => {
+  try {
+    const { logId } = req.params;
+    const agentId = req.user.id;
+
+    if (!mongoose.Types.ObjectId.isValid(logId)) {
+      return res.status(400).json({ success: false, message: 'Invalid log ID format' });
+    }
+
+    // Find the log and verify it belongs to the agent
+    const log = await EscortLog.findById(logId);
+    
+    if (!log) {
+      return res.status(404).json({ success: false, message: 'Log not found' });
+    }
+
+    // Check if the agent is the one who created the log
+    if (log.createdBy.id.toString() !== agentId.toString()) {
+      return res.status(403).json({ success: false, message: 'You can only delete your own logs' });
+    }
+
+    await EscortLog.findByIdAndDelete(logId);
+    
+    res.json({ success: true, message: 'Log deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting escort log:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Delete a user log
+router.delete('/user/:logId', isAuthenticated, isAgent, async (req, res) => {
+  try {
+    const { logId } = req.params;
+    const agentId = req.user.id;
+
+    if (!mongoose.Types.ObjectId.isValid(logId)) {
+      return res.status(400).json({ success: false, message: 'Invalid log ID format' });
+    }
+
+    // Find the log and verify it belongs to the agent
+    const log = await UserLog.findById(logId);
+    
+    if (!log) {
+      return res.status(404).json({ success: false, message: 'Log not found' });
+    }
+
+    // Check if the agent is the one who created the log
+    if (log.createdBy.id.toString() !== agentId.toString()) {
+      return res.status(403).json({ success: false, message: 'You can only delete your own logs' });
+    }
+
+    await UserLog.findByIdAndDelete(logId);
+    
+    res.json({ success: true, message: 'Log deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting user log:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
