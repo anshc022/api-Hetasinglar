@@ -1477,6 +1477,17 @@ router.post('/chats/:chatId/panic-room', agentAuth, async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
+    // Invalidate live-queue caches so UI reflects panic state immediately
+    try {
+      clearLiveQueueFallbackCache();
+      if (cache && typeof cache.delete === 'function') {
+        cache.delete('live_queue:global');
+        cache.delete('live_queue_updates:all');
+      }
+    } catch (e) {
+      console.warn('Live queue cache clear (panic move) warning:', e?.message || e);
+    }
+
     res.json({
       success: true,
       message: 'Chat moved to panic room successfully',
@@ -1520,6 +1531,17 @@ router.post('/chats/:chatId/remove-panic-room', agentAuth, async (req, res) => {
 
     if (!chat) {
       return res.status(404).json({ message: 'Chat not found' });
+    }
+
+    // Invalidate live-queue caches so UI reflects removal immediately
+    try {
+      clearLiveQueueFallbackCache();
+      if (cache && typeof cache.delete === 'function') {
+        cache.delete('live_queue:global');
+        cache.delete('live_queue_updates:all');
+      }
+    } catch (e) {
+      console.warn('Live queue cache clear (panic remove) warning:', e?.message || e);
     }
 
     res.json({
