@@ -132,6 +132,9 @@ const userSchema = new mongoose.Schema({
   }
 });
 
+// Index to speed up new-customer queries (status + createdAt)
+userSchema.index({ status: 1, createdAt: -1 });
+
 userSchema.pre('save', async function(next) {
   if (this.isModified('password')) {
     this.password = await bcrypt.hash(this.password, 10);

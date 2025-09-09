@@ -74,6 +74,14 @@ const chatSchema = new mongoose.Schema({
   // Reminder system fields (lightweight, performance-friendly)
   // reminderActive: true when a reminder should be shown in Live Dashboard
   reminderActive: { type: Boolean, default: false, index: true },
+  // reminderHandled: true when an agent has responded to the reminder
+  reminderHandled: { type: Boolean, default: false, index: true },
+  // reminderHandledAt: timestamp when the reminder was handled by agent
+  reminderHandledAt: { type: Date },
+  // reminderSnoozedUntil: if reminder is snoozed, don't show until this time
+  reminderSnoozedUntil: { type: Date },
+  // reminderPriority: priority level (NEW, MEDIUM, HIGH, CRITICAL)
+  reminderPriority: { type: String },
   // firstReminderAt: when the first reminder for this inactivity cycle was triggered
   firstReminderAt: { type: Date },
   // lastReminderAt: when the most recent reminder was triggered
@@ -120,3 +128,6 @@ chatSchema.pre('save', function(next) {
 });
 
 module.exports = mongoose.model('Chat', chatSchema);
+
+// Compound index to support checking existing chats by customer and status
+chatSchema.index({ customerId: 1, status: 1 });

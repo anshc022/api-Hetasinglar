@@ -4,6 +4,7 @@ const Subscription = require('../models/Subscription');
 const User = require('../models/User');
 const SubscriptionPlan = require('../models/SubscriptionPlan');
 const { auth } = require('../auth');
+const cache = require('../services/cache');
 const WebSocket = require('ws');
 
 // Get subscription plans
@@ -305,18 +306,40 @@ router.post('/purchase/coins', auth, async (req, res) => {
 // Get user's coin balance
 router.get('/coins/balance', auth, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const userId = req.user?.id || req.user?._id;
+    if (!userId) return res.status(401).json({ message: 'User not authenticated' });
+
+    const cacheKey = `coins:balance:${userId}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      const etagCached = require('crypto').createHash('md5').update(JSON.stringify(cached)).digest('hex');
+      res.set('ETag', etagCached);
+      if (req.headers['if-none-match'] === etagCached) return res.status(304).end();
+      return res.json(cached);
+    }
+
+    const user = await User.findById(userId)
+      .select('coins.balance coins.totalPurchased coins.totalUsed coins.lastPurchaseDate coins.lastUsageDate')
+      .lean();
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    res.json({
-      balance: user.coins.balance,
-      totalPurchased: user.coins.totalPurchased,
-      totalUsed: user.coins.totalUsed,
-      lastPurchase: user.coins.lastPurchaseDate,
-      lastUsage: user.coins.lastUsageDate
-    });
+    const payload = {
+      balance: user.coins?.balance || 0,
+      totalPurchased: user.coins?.totalPurchased || 0,
+      totalUsed: user.coins?.totalUsed || 0,
+      lastPurchase: user.coins?.lastPurchaseDate || null,
+      lastUsage: user.coins?.lastUsageDate || null
+    };
+
+    // Short TTL to keep it fresh but reduce DB hits
+    cache.set(cacheKey, payload, 30 * 1000);
+
+    const etag = require('crypto').createHash('md5').update(JSON.stringify(payload)).digest('hex');
+    res.set('ETag', etag);
+    if (req.headers['if-none-match'] === etag) return res.status(304).end();
+    res.json(payload);
   } catch (error) {
     console.error('Error fetching coin balance:', error);
     res.status(500).json({ message: 'Failed to fetch coin balance' });

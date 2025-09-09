@@ -10,7 +10,8 @@ const mongoose = require('mongoose');
 // Get newly registered customers (last 24-48 hours)
 router.get('/new-customers', agentAuth, async (req, res) => {
   try {
-    const { domain, hours = 48 } = req.query;
+  const { domain } = req.query;
+  const hours = Math.min(parseInt(req.query.hours || 48), 72); // cap to protect performance
     
     // Calculate time threshold for "new" customers
     const timeThreshold = new Date();
@@ -27,16 +28,40 @@ router.get('/new-customers', agentAuth, async (req, res) => {
     }
     
     // Get new customers who haven't been assigned yet
-    const newCustomers = await User.find(query)
+    let userQuery = User.find(query)
       .select('_id username email createdAt registrationDomain lastActiveDate')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
+    // Try to use an index hint if available; fall back gracefully if not
+    let newCustomers;
+    try {
+      newCustomers = await userQuery.hint({ status: 1, createdAt: -1 }).exec();
+    } catch (e) {
+      if (e?.codeName === 'BadValue' || e?.code === 2) {
+        console.warn('Index hint not available for users(status, createdAt) - retrying without hint');
+        newCustomers = await userQuery.exec();
+      } else {
+        throw e;
+      }
+    }
     
     // Check which customers already have active chats
     const customerIds = newCustomers.map(customer => customer._id);
-    const existingChats = await Chat.find({
+    let chatsBaseQuery = Chat.find({
       customerId: { $in: customerIds },
       status: { $in: ['assigned', 'active'] }
-    }).select('customerId');
+    }).select('customerId').lean();
+    let existingChats;
+    try {
+      existingChats = await chatsBaseQuery.hint({ customerId: 1, status: 1 }).exec();
+    } catch (e) {
+      if (e?.codeName === 'BadValue' || e?.code === 2) {
+        console.warn('Index hint not available for chats(customerId, status) - retrying without hint');
+        existingChats = await chatsBaseQuery.exec();
+      } else {
+        throw e;
+      }
+    }
     
     const assignedCustomerIds = new Set(existingChats.map(chat => chat.customerId.toString()));
     

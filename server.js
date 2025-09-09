@@ -305,6 +305,21 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3
   await createDefaultAdmin(); // Initialize default admin account
   await initializeCommissionSystem(); // Initialize commission and affiliate system
 
+  // Ensure critical indexes exist (prevents hint errors and speeds queries)
+  try {
+    const User = require('./models/User');
+    const Chat = require('./models/Chat');
+    const EscortProfile = require('./models/EscortProfile');
+    await Promise.all([
+      User.syncIndexes(),
+      Chat.syncIndexes(),
+      EscortProfile.syncIndexes()
+    ]);
+    console.log('✅ Index synchronization complete for User, Chat, EscortProfile');
+  } catch (idxErr) {
+    console.log('⚠️  Index sync warning:', idxErr.message);
+  }
+
   // Warm-up: Prefetch public escorts list into cache to reduce first-hit latency
   try {
     const cacheKey = 'escorts:active:all';
@@ -315,7 +330,8 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3
         .select('username firstName gender profileImage profilePicture imageUrl country region status createdAt')
         .sort({ createdAt: -1 })
         .lean();
-      cacheService.set(cacheKey, profiles, 120000);
+  // Align TTL with route caching (5 minutes) to reduce DB load
+  cacheService.set(cacheKey, profiles, 300000);
       console.log(`✅ Warmed escorts cache with ${profiles.length} profiles`);
     }
   } catch (warmErr) {

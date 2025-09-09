@@ -7,9 +7,10 @@ const Subscription = require('../models/Subscription');
 const SubscriptionPlan = require('../models/SubscriptionPlan');
 const User = require('../models/User');
 const Earnings = require('../models/Earnings');
-const { auth } = require('../auth');
+const { auth, agentAuth } = require('../auth');
 const ActiveUsersService = require('../services/activeUsers');
 const cache = require('../services/cache'); // Global cache service
+const reminderService = require('../services/reminderService');
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
@@ -365,113 +366,20 @@ router.delete('/:chatId/messages/:messageIndex/note', async (req, res) => {
   }
 });
 
-// Watch live queue
+// Watch live queue - DEPRECATED AND DISABLED
 router.get('/live-queue/:escortId?/:chatId?', async (req, res) => {
-  // This route is deprecated for agent dashboard. Use /api/agents/chats/live-queue instead.
-  console.warn('⚠️  DEPRECATED: /api/chats/live-queue was called. Frontend should use /api/agents/chats/live-queue');
-  try {
-    const { escortId, chatId } = req.params;
-    
-    // Base query for regular live queue
-    let query = {
-      status: { $in: ['new', 'assigned'] },
-      $or: [
-        { pushBackUntil: { $exists: false } },
-        { pushBackUntil: { $lt: new Date() } }
-      ]
-    };
-    
-    // If escortId is provided, filter by it
-    if (escortId) {
-      try {
-        query.escortId = new mongoose.Types.ObjectId(escortId);
-      } catch (error) {
-        return res.status(400).json({ message: 'Invalid escort ID format' });
-      }
-    }
-
-    // If chatId is provided, modify query to include it regardless of other criteria
-    if (chatId) {
-      try {
-        const chatObjectId = new mongoose.Types.ObjectId(chatId);
-        // Create a compound query: either matches live queue criteria OR is the specific chat
-        query = {
-          $or: [
-            // Original live queue query
-            {
-              status: { $in: ['new', 'assigned'] },
-              $or: [
-                { pushBackUntil: { $exists: false } },
-                { pushBackUntil: { $lt: new Date() } }
-              ],
-              ...(escortId && { escortId: new mongoose.Types.ObjectId(escortId) })
-            },
-            // Specific chat query (include chat regardless of status/pushback)
-            {
-              _id: chatObjectId,
-              ...(escortId && { escortId: new mongoose.Types.ObjectId(escortId) })
-            }
-          ]
-        };
-      } catch (error) {
-        return res.status(400).json({ message: 'Invalid chat ID format' });
-      }
-    }
-
-    const chats = await Chat.find(query)
-      .populate('customerId', 'username email dateOfBirth sex createdAt coins')
-      .populate('escortId', 'firstName gender profileImage country region relationshipStatus interests profession height dateOfBirth')
-      .sort({ createdAt: -1 });
-
-    const formattedChats = chats.map(chat => {
-      const unreadCount = chat.messages.filter(msg => 
-        msg.sender === 'customer' && !msg.readByAgent
-      ).length;
-
-      const isUserActive = ActiveUsersService.isUserActive(chat.customerId?._id.toString());
-      
-      // Get last message read status
-      const lastMessage = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
-      const hasUnreadAgentMessages = chat.messages.filter(msg => 
-        msg.sender === 'agent' && !msg.readByCustomer
-      ).length > 0;
-
-      return {
-        _id: chat._id,
-        customerId: chat.customerId,
-        customerName: chat.customerId?.username || chat.customerName,
-        escortId: chat.escortId,
-        escortName: chat.escortId?.firstName || chat.escortName,
-        status: chat.status,
-        messages: chat.messages,
-        createdAt: chat.createdAt,
-        updatedAt: chat.updatedAt,
-        lastActive: chat.updatedAt,
-        unreadCount,
-        isUserActive,
-        isInPanicRoom: chat.isInPanicRoom || false,
-        panicRoomReason: chat.panicRoomReason,
-        panicRoomMovedAt: chat.panicRoomMovedAt,
-        lastMessage: lastMessage ? {
-          message: lastMessage.message,
-          messageType: lastMessage.messageType,
-          sender: lastMessage.sender,
-          timestamp: lastMessage.timestamp,
-          readByAgent: lastMessage.readByAgent,
-          readByCustomer: lastMessage.readByCustomer
-        } : null,
-        hasUnreadAgentMessages
-      };
-    });
-
-    res.json(formattedChats);
-  } catch (error) {
-    console.error('Error fetching live queue:', error);
-    res.status(500).json({ 
-      message: 'Failed to fetch live queue',
-      error: error.message 
-    });
-  }
+  // This route is deprecated and disabled for performance. Use /api/agents/chats/live-queue instead.
+  console.warn('🚨 DEPRECATED ENDPOINT CALLED: /api/chats/live-queue is disabled for performance');
+  console.warn('   Frontend should use /api/agents/chats/live-queue instead');
+  console.warn(`   Request from: ${req.get('User-Agent') || 'Unknown'}`);
+  
+  // Return immediate redirect response instead of running slow query
+  return res.status(410).json({ 
+    message: 'This endpoint is deprecated and disabled for performance reasons',
+    redirectTo: '/api/agents/chats/live-queue',
+    error: 'ENDPOINT_DEPRECATED',
+    documentation: 'Use /api/agents/chats/live-queue for optimized performance'
+  });
 });
 
 // Make first contact - update this route
@@ -873,14 +781,24 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
     // Update chat activity timestamps
     if (req.agent) {
       chatUpdate.$set.lastAgentResponse = new Date();
-  // If agent is replying while a reminder is active, keep reminderActive until customer replies
-  // (No change to reminderActive here to ensure visibility until customer response)
+      // Agent replied: mark any active reminder as handled immediately
+      chatUpdate.$set.reminderHandled = true;
+      chatUpdate.$set.reminderHandledAt = new Date();
+      // Also reset reminderActive and related fields to clean up the reminder state
+      chatUpdate.$set.reminderActive = false;
+      chatUpdate.$unset = { 
+        ...(chatUpdate.$unset || {}),
+        reminderSnoozedUntil: 1,
+        reminderPriority: 1
+      };
     } else {
       chatUpdate.$set.lastCustomerResponse = new Date();
   // Customer replied: resolve any active reminder cycle instantly
   chatUpdate.$set.reminderActive = false;
   chatUpdate.$set.reminderResolvedAt = new Date();
   chatUpdate.$set.reminderCount = 0; // reset cycle count
+  // Also reset reminderHandled flag when customer replies - conversation is active again
+  chatUpdate.$set.reminderHandled = false;
     }
 
     // Update chat status if needed
@@ -1036,6 +954,20 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
             1,
             messageType
           );
+        }
+
+        // Handle reminder service updates (background operation) - for logging/cleanup
+        try {
+          if (req.agent) {
+            // Agent sent a message - already handled in main update, just log
+            console.log(`Agent responded to chat ${chatId} - reminder marked as handled`);
+          } else {
+            // Customer sent a message - reset reminder flags (additional cleanup)
+            await reminderService.handleCustomerResponse(chatId);
+          }
+        } catch (reminderError) {
+          console.error('Reminder service error:', reminderError);
+          // Don't fail the message if reminder service has issues
         }
 
         // Send live queue update notification (background)
@@ -1812,26 +1744,56 @@ router.get('/live-queue-updates', auth, async (req, res) => {
   }
 });
 
-// Get single chat
+// Get single chat - OPTIMIZED with caching and performance improvements
 router.get('/:chatId', auth, async (req, res) => {
+  const startTime = Date.now();
+  const { chatId } = req.params;
+  
   try {
-    const chat = await Chat.findById(req.params.chatId)
+    // Check cache first
+    const cacheKey = `chat_${chatId}`;
+    const cachedChat = cache.get(cacheKey);
+    
+    if (cachedChat) {
+      console.log(`🚀 Cache HIT: single chat ${chatId} (${Date.now() - startTime}ms)`);
+      return res.json(cachedChat);
+    }
+
+    console.log(`❌ Cache MISS: single chat ${chatId} - generating fresh data`);
+
+    // Optimized database query with lean() for better performance
+    const chat = await Chat.findById(chatId)
       .populate('customerId', 'username email dateOfBirth sex createdAt coins')
-      .populate('escortId', 'firstName gender profileImage country region relationshipStatus interests profession height dateOfBirth');
+      .populate('escortId', 'firstName gender profileImage country region relationshipStatus interests profession height dateOfBirth')
+      .lean(); // Use lean for better performance
 
     if (!chat) {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
-    // Format response consistent with live queue
-    const unreadCount = chat.messages.filter(msg => 
-      msg.sender === 'customer' && !msg.readByAgent
-    ).length;
+    // Optimized unread count - only process recent messages if there are many
+    let unreadCount = 0;
+    if (chat.messages && chat.messages.length > 0) {
+      // For performance: if more than 100 messages, only check the last 50 for unread
+      const messagesToCheck = chat.messages.length > 100 
+        ? chat.messages.slice(-50) 
+        : chat.messages;
+      
+      unreadCount = messagesToCheck.filter(msg => 
+        msg.sender === 'customer' && !msg.readByAgent
+      ).length;
+    }
 
-  const activeMap = ActiveUsersService.getActiveUsers();
-  const uid = chat.customerId?._id?.toString();
-  const isUserActive = !!(uid && activeMap.has(uid));
-  const lastSeen = isUserActive ? new Date() : (uid ? activeMap.get(uid) : chat.updatedAt);
+    // Get active user status
+    const activeMap = ActiveUsersService.getActiveUsers();
+    const uid = chat.customerId?._id?.toString();
+    const isUserActive = !!(uid && activeMap.has(uid));
+    const lastSeen = isUserActive ? new Date() : (uid ? activeMap.get(uid) : chat.updatedAt);
+
+    // Limit messages for better performance - only return last 50 messages
+    const limitedMessages = chat.messages && chat.messages.length > 50 
+      ? chat.messages.slice(-50) 
+      : chat.messages;
 
     const formattedChat = {
       _id: chat._id,
@@ -1839,7 +1801,7 @@ router.get('/:chatId', auth, async (req, res) => {
       customerName: chat.customerId?.username || chat.customerName,
       escortId: chat.escortId,
       status: chat.status,
-      messages: chat.messages,
+      messages: limitedMessages, // Limited messages for performance
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
       unreadCount,
@@ -1849,13 +1811,82 @@ router.get('/:chatId', auth, async (req, res) => {
         isOnline: isUserActive,
         lastSeen: lastSeen,
         status: isUserActive ? 'online' : 'offline'
-      }
+      },
+      // Metadata for debugging
+      totalMessages: chat.messages?.length || 0,
+      messagesShown: limitedMessages?.length || 0
     };
 
+    // Cache the result for 2 minutes (frequently accessed chats)
+    const cacheTTL = 120000; // 2 minutes
+    cache.set(cacheKey, formattedChat, cacheTTL);
+    
+    const duration = Date.now() - startTime;
+    console.log(`⚡ Single chat ${chatId} loaded in ${duration}ms (${chat.messages?.length || 0} total messages, ${limitedMessages?.length || 0} returned)`);
+    
     res.json(formattedChat);
   } catch (error) {
     console.error('Error fetching single chat:', error);
     res.status(500).json({ message: 'Failed to fetch chat' });
+  }
+});
+
+// Get full message history for a chat - separate endpoint to avoid slowing down main chat load
+router.get('/:chatId/messages/full', auth, async (req, res) => {
+  const startTime = Date.now();
+  const { chatId } = req.params;
+  
+  try {
+    const { page = 1, limit = 100 } = req.query;
+    
+    // Check cache first
+    const cacheKey = `chat_full_messages_${chatId}_${page}_${limit}`;
+    const cached = cache.get(cacheKey);
+    
+    if (cached) {
+      console.log(`🚀 Cache HIT: full messages ${chatId} page ${page} (${Date.now() - startTime}ms)`);
+      return res.json(cached);
+    }
+
+    // Get chat with all messages but use lean() for performance
+    const chat = await Chat.findById(chatId, 'messages createdAt updatedAt').lean();
+    
+    if (!chat) {
+      return res.status(404).json({ message: 'Chat not found' });
+    }
+
+    // Implement pagination
+    const totalMessages = chat.messages?.length || 0;
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + parseInt(limit);
+    
+    // Get messages in reverse order (newest first) then reverse to get chronological
+    const allMessages = [...(chat.messages || [])].reverse();
+    const paginatedMessages = allMessages.slice(startIndex, endIndex).reverse();
+    
+    const response = {
+      chatId: chat._id,
+      messages: paginatedMessages,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalMessages,
+        totalPages: Math.ceil(totalMessages / limit),
+        hasNext: endIndex < totalMessages,
+        hasPrev: page > 1
+      }
+    };
+
+    // Cache for 5 minutes (message history doesn't change as often)
+    cache.set(cacheKey, response, 300000);
+    
+    const duration = Date.now() - startTime;
+    console.log(`⚡ Full message history ${chatId} loaded in ${duration}ms (page ${page}, ${paginatedMessages.length}/${totalMessages} messages)`);
+    
+    res.json(response);
+  } catch (error) {
+    console.error('Error fetching full message history:', error);
+    res.status(500).json({ message: 'Failed to fetch message history' });
   }
 });
 

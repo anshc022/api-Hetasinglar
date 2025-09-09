@@ -10,6 +10,8 @@ const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
 const crypto = require('crypto');
+// Inflight map to de-duplicate concurrent fetches per cacheKey
+const inflightFetches = new Map();
 
 // Fallback cache for ultra-fast live queue
 const liveQueueCache = new Map();
@@ -86,8 +88,10 @@ router.post('/login', async (req, res) => {
 // Get active escort profiles (with optional filtering & pagination)
 router.get('/escorts/active', async (req, res) => {
   try {
-    const page = parseInt(req.query.page, 10) || 0;
-    const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 0, 0);
+  const page = parseInt(req.query.page, 10) || 0;
+  const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 0, 0);
+  const withTotals = (req.query.withTotals || 'false').toLowerCase() === 'true';
+  const format = (req.query.format || 'array').toLowerCase(); // 'array' (default) or 'v2'
     const gender = req.query.gender;
     const country = req.query.country;
     const region = req.query.region;
@@ -100,45 +104,101 @@ router.get('/escorts/active', async (req, res) => {
     const isPaginated = page > 0 && pageSize > 0;
 
     const baseKey = 'escorts:active';
-    const filterKey = JSON.stringify({ gender, country, region });
+    const filterKey = JSON.stringify({ gender: gender || null, country: country || null, region: region || null });
     const cacheKey = isPaginated
-      ? `${baseKey}:filters:${filterKey}:page:${page}:size:${pageSize}`
-      : (filterKey === JSON.stringify({}) ? `${baseKey}:all` : `${baseKey}:filters:${filterKey}`);
+      ? `${baseKey}:filters:${filterKey}:page:${page}:size:${pageSize}:totals:${withTotals}`
+      : (filterKey === JSON.stringify({ gender: null, country: null, region: null }) ? `${baseKey}:all` : `${baseKey}:filters:${filterKey}`);
 
     let profiles = cache.get(cacheKey);
+    let hasMore = false;
+    let totalsMeta = null;
+    const t0 = Date.now();
     if (!profiles) {
       console.log(`Cache miss - fetching escorts from database for key ${cacheKey}`);
-      let query = EscortProfile.find(filter)
-        .select('username firstName gender profileImage profilePicture imageUrl country region status createdAt')
-        .sort({ createdAt: -1 })
-        .lean();
-      if (isPaginated) {
-        query = query.skip((page - 1) * pageSize).limit(pageSize);
+
+      // De-duplicate concurrent fetches per cacheKey
+      if (inflightFetches.has(cacheKey)) {
+        profiles = await inflightFetches.get(cacheKey);
+      } else {
+        const fetchPromise = (async () => {
+          let query = EscortProfile.find(filter)
+            .select('username firstName gender profileImage profilePicture imageUrl country region status createdAt')
+            .sort({ createdAt: -1 })
+            .lean();
+
+          // Apply index hints when possible to ensure index usage
+          try {
+            if (gender && country && region) {
+              query = query.hint({ status: 1, country: 1, region: 1, createdAt: -1 });
+            } else if (country && region) {
+              query = query.hint({ status: 1, country: 1, region: 1, createdAt: -1 });
+            } else if (gender) {
+              query = query.hint({ status: 1, gender: 1, createdAt: -1 });
+            } else {
+              query = query.hint({ status: 1, createdAt: -1 });
+            }
+          } catch {}
+
+          if (isPaginated) {
+            // Use 1 extra doc to determine hasMore without total count
+            query = query.skip((page - 1) * pageSize).limit(pageSize + 1);
+          }
+          const result = await query.exec();
+          return result;
+        })();
+
+        inflightFetches.set(cacheKey, fetchPromise);
+        try {
+          profiles = await fetchPromise;
+        } finally {
+          inflightFetches.delete(cacheKey);
+        }
       }
-      profiles = await query.exec();
-      if (isPaginated) {
+
+      if (isPaginated && Array.isArray(profiles)) {
+        hasMore = profiles.length > pageSize;
+        if (hasMore) profiles = profiles.slice(0, pageSize);
+      }
+
+      if (isPaginated && withTotals) {
         try {
           const total = await EscortProfile.countDocuments(filter);
           const totalPages = Math.ceil(total / pageSize);
+          totalsMeta = { total, totalPages };
           res.set('X-Total-Count', String(total));
           res.set('X-Total-Pages', String(totalPages));
-          res.set('X-Page', String(page));
-          res.set('X-Page-Size', String(pageSize));
         } catch (countErr) {
           console.log('Count error (non-fatal):', countErr.message);
         }
       }
-      cache.set(cacheKey, profiles, 120 * 1000);
-      console.log(`Cached ${profiles.length} escort profiles for key ${cacheKey}`);
+
+      // Extend TTL to reduce DB load (5 minutes)
+      const ttl = 300 * 1000;
+      cache.set(cacheKey, profiles, ttl);
+      console.log(`Cached ${profiles.length} escort profiles for key ${cacheKey} (TTL ${ttl}ms) in ${Date.now() - t0}ms`);
     } else {
-      console.log(`Cache hit - returning ${profiles.length} escort profiles for key ${cacheKey}`);
+      console.log(`Cache hit - returning ${Array.isArray(profiles) ? profiles.length : 0} escort profiles for key ${cacheKey} (age <= TTL)`);
     }
-    const etag = crypto.createHash('md5').update(JSON.stringify(profiles)).digest('hex');
+    // Choose response shape (default array for backward compatibility)
+    const responseBody = format === 'v2'
+      ? (isPaginated
+          ? { items: profiles, page, pageSize, hasMore, totals: withTotals ? (totalsMeta || null) : undefined }
+          : { items: profiles })
+      : profiles;
+
+    // Expose hasMore via header for legacy clients
+    if (isPaginated) {
+      res.set('X-Has-More', String(hasMore));
+      res.set('X-Page', String(page));
+      res.set('X-Page-Size', String(pageSize));
+    }
+
+  const etag = crypto.createHash('md5').update(JSON.stringify(responseBody)).digest('hex');
     res.set('ETag', etag);
     if (req.headers['if-none-match'] === etag) {
       return res.status(304).end();
     }
-    res.json(profiles);
+    res.json(responseBody);
   } catch (error) {
     console.error('Error fetching escort profiles:', error);
     res.status(500).json({
@@ -987,7 +1047,7 @@ router.post('/chats/:chatId/assign', agentAuth, async (req, res) => {
   }
 });
 
-// Get chats for live queue - ULTRA OPTIMIZED with Fallback Cache
+// Get chats for live queue - ULTRA OPTIMIZED with Aggressive Caching
 router.get('/chats/live-queue', agentAuth, async (req, res) => {
   const startTime = Date.now();
   const agentId = req.agent?._id;
@@ -996,7 +1056,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     // Use global cache key since all agents see the same live queue now
     const cacheKey = `live_queue:global`;
     
-    // Check fallback cache first (guaranteed to work)
+    // Check fallback cache first (guaranteed to work) - Increased TTL for performance
     if (liveQueueCache.has(cacheKey)) {
       const cachedData = liveQueueCache.get(cacheKey);
       console.log(`🚀 FALLBACK Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
@@ -1013,48 +1073,30 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     
     console.log(`❌ Cache MISS: global live-queue - generating fresh data`);
 
-    // Super-optimized aggregation - minimal operations for max speed
-    // Show chats that need agent attention: new, active, assigned, panic room, or with unread messages
+    // SUPER FAST AGGREGATION - Minimal operations for maximum speed
+    // Only get essential data and use indexes efficiently
     const chats = await Chat.aggregate([
       {
+        // Stage 1: Fast index-based match - only active chats
         $match: {
           $or: [
-            { status: 'new' },
-            { status: 'assigned' },
-            { status: 'active' },
+            { status: { $in: ['new', 'assigned', 'active'] } },
             { isInPanicRoom: true },
-            // Chats with unread customer messages
+            // Fast unread message check using sparse index
             { 
-              messages: {
-                $elemMatch: {
-                  sender: 'customer',
-                  readByAgent: false
-                }
-              }
-            },
-            // Chats with active reminder but currently no unread (need follow-up visibility)
-            { reminderActive: true }
+              "messages.readByAgent": false,
+              "messages.sender": "customer"
+            }
           ]
         }
       },
       {
-        // Lightweight calculation: compute hours since last customer response for reminder logic
+        // Stage 2: Add only critical calculated fields
         $addFields: {
-          hoursSinceLastCustomer: {
-            $divide: [
-              { $subtract: [new Date(), { $ifNull: ['$lastCustomerResponse', '$createdAt'] }] },
-              1000 * 60 * 60
-            ]
-          }
-        }
-      },
-      {
-        $addFields: {
-          // Calculate unread count efficiently in one operation
           unreadCount: {
             $size: {
               $filter: {
-                input: '$messages',
+                input: { $slice: ["$messages", -20] }, // Only check last 20 messages for speed
                 as: 'message',
                 cond: {
                   $and: [
@@ -1065,91 +1107,38 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
               }
             }
           },
-          // Get last message efficiently
           lastMessage: { $arrayElemAt: ['$messages', -1] },
-          // Get the last agent message to determine who's handling this chat
-          lastAgentMessage: {
-            $arrayElemAt: [
-              {
-                $filter: {
-                  input: '$messages',
-                  as: 'msg',
-                  cond: { $eq: ['$$msg.sender', 'agent'] }
-                }
-              },
-              -1
-            ]
-          },
           priority: {
-            $switch: {
-              branches: [
-                // Panic room has highest priority (5)
-                { case: { $eq: ['$isInPanicRoom', true] }, then: 5 },
-                // Active reminder with no unread messages (treat high priority just below panic)
-                { case: { $and: [ { $eq: ['$reminderActive', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 4 },
-                // Many unread messages have high priority (4)
-                { case: { $gt: ['$unreadCount', 5] }, then: 4 },
-                // Some unread messages have medium-high priority (3)
-                { case: { $gt: ['$unreadCount', 2] }, then: 3 },
-                // Any unread messages have medium priority (2)
-                { case: { $gt: ['$unreadCount', 0] }, then: 2 }
-              ],
-              default: 1
-            }
+            $cond: [
+              { $eq: ['$isInPanicRoom', true] }, 5,
+              {
+                $cond: [
+                  { $gt: [{ $size: { $filter: { input: { $slice: ["$messages", -10] }, as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 5] }, 4,
+                  {
+                    $cond: [
+                      { $gt: [{ $size: { $filter: { input: { $slice: ["$messages", -10] }, as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 0] }, 2,
+                      1
+                    ]
+                  }
+                ]
+              }
+            ]
           }
         }
       },
       {
-        $addFields: {
-          // Chat type classification (separate stage to reference calculated fields)
-          chatType: {
-            $switch: {
-              branches: [
-                { case: { $eq: ['$isInPanicRoom', true] }, then: 'panic' },
-                // Unread customer messages -> queue
-                { case: { $gt: ['$unreadCount', 0] }, then: 'queue' },
-                // Active reminder (no unread)
-                { case: { $and: [ { $eq: ['$reminderActive', true] }, { $eq: ['$unreadCount', 0] } ] }, then: 'reminder' }
-              ],
-              default: 'idle'
-            }
-          }
-        }
-      },
-      {
+        // Stage 3: FAST lookups - only essential data, no deep nesting
         $lookup: {
           from: 'users',
           localField: 'customerId',
           foreignField: '_id',
           as: 'customer',
-          pipeline: [{ $project: { username: 1, coins: 1 } }]
-        }
-      },
-      {
-        $lookup: {
-          from: 'agentcustomers',
-          localField: 'customerId',
-          foreignField: 'customerId',
-          as: 'customerAssignment',
-          pipeline: [
-            { $match: { status: 'active' } },
-            {
-              $lookup: {
-                from: 'agents',
-                localField: 'agentId',
-                foreignField: '_id',
-                as: 'assignedAgentInfo',
-                pipeline: [{ $project: { name: 1, agentId: 1 } }]
-              }
-            },
-            {
-              $project: {
-                agentId: 1,
-                assignedAgentInfo: { $arrayElemAt: ['$assignedAgentInfo', 0] },
-                assignmentType: 1
-              }
-            }
-          ]
+          pipeline: [{ 
+            $project: { 
+              username: 1,
+              _id: 1
+            } 
+          }]
         }
       },
       {
@@ -1158,89 +1147,52 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           localField: 'escortId',
           foreignField: '_id',
           as: 'escort',
-          pipeline: [{ $project: { firstName: 1 } }]
+          pipeline: [{ 
+            $project: { 
+              firstName: 1,
+              _id: 1
+            } 
+          }]
         }
       },
       {
-        $lookup: {
-          from: 'agents',
-          let: { chatAgentId: '$agentId', chatAssignedAgent: '$assignedAgent' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $or: [
-                    { $eq: ['$_id', '$$chatAgentId'] },
-                    { $eq: ['$_id', '$$chatAssignedAgent'] }
-                  ]
-                }
-              }
-            },
-            { $project: { name: 1, agentId: 1 } }
-          ],
-          as: 'assignedAgent'
-        }
-      },
-      {
+        // Stage 4: Minimal projection for speed
         $project: {
+          _id: 1,
           customerId: { $arrayElemAt: ['$customer', 0] },
           escortId: { $arrayElemAt: ['$escort', 0] },
           agentId: 1,
-          assignedAgent: {
+          status: 1,
+          customerName: 1,
+          isInPanicRoom: 1,
+          createdAt: 1,
+          updatedAt: 1,
+          unreadCount: 1,
+          priority: 1,
+          reminderActive: 1,
+          reminderHandled: 1,
+          chatType: {
             $cond: [
-              // First priority: Use customer assignment from admin panel
-              { $gt: [{ $size: '$customerAssignment' }, 0] },
-              {
-                $let: {
-                  vars: { assignment: { $arrayElemAt: ['$customerAssignment', 0] } },
-                  in: '$$assignment.assignedAgentInfo'
-                }
-              },
-              // Second priority: Use chat's agentId lookup
+              { $eq: ['$isInPanicRoom', true] }, 'panic',
               {
                 $cond: [
-                  { $gt: [{ $size: '$assignedAgent' }, 0] },
-                  { $arrayElemAt: ['$assignedAgent', 0] },
-                  // Third priority: Use name from last agent message
+                  { $gt: ['$unreadCount', 0] }, 'queue',
                   {
                     $cond: [
-                      { $ne: ['$lastAgentMessage.senderName', null] },
-                      {
-                        name: '$lastAgentMessage.senderName',
-                        agentId: 'Unknown',
-                        _id: null,
-                        isFromMessage: true
-                      },
-                      null
+                      { $and: [{ $eq: ['$reminderActive', true] }, { $ne: ['$reminderHandled', true] }] }, 'reminder',
+                      'idle'
                     ]
                   }
                 ]
               }
             ]
           },
-          status: 1,
-          customerName: 1,
-          lastCustomerResponse: 1,
-          lastAgentResponse: 1,
-          isInPanicRoom: 1,
-          panicRoomEnteredAt: 1,
-          panicRoomReason: 1,
-          panicRoomNotes: 1,
-          createdAt: 1,
-          updatedAt: 1,
-          unreadCount: 1,
-          priority: 1,
-          reminderActive: 1,
-          reminderCount: 1,
-          lastReminderAt: 1,
-          hoursSinceLastCustomer: 1,
-          chatType: 1,
           lastMessage: {
             message: {
               $cond: [
                 { $eq: ['$lastMessage.messageType', 'image'] },
                 '📷 Image',
-                '$lastMessage.message'
+                { $substr: ['$lastMessage.message', 0, 100] } // Truncate for performance
               ]
             },
             messageType: '$lastMessage.messageType',
@@ -1249,26 +1201,27 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
             readByAgent: '$lastMessage.readByAgent'
           },
           hasNewMessages: { $gt: ['$unreadCount', 0] },
-          // Use $literal to avoid projection exclusion semantics
-          isUserActive: { $literal: false }
+          isUserActive: { $literal: false } // Will be updated after query
         }
       },
       {
+        // Stage 5: Fast sort by priority then update time
         $sort: {
           priority: -1,
           updatedAt: -1
         }
       },
       {
-        $limit: 50 // Reduced limit for faster queries
+        // Stage 6: Limit for performance
+        $limit: 30 // Reduced for faster queries
       }
     ]);
 
-    // Set fallback cache with 15-second TTL (guaranteed to work)
+    // Set aggressive fallback cache with 45-second TTL for better performance
     liveQueueCache.set(cacheKey, chats);
     console.log(`💾 FALLBACK cache set for global live-queue`);
     
-    // Clear cache after 15 seconds
+    // Clear cache after 45 seconds (increased for performance)
     if (cacheTimers.has(cacheKey)) {
       clearTimeout(cacheTimers.get(cacheKey));
     }
@@ -1276,20 +1229,25 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       liveQueueCache.delete(cacheKey);
       cacheTimers.delete(cacheKey);
       console.log(`🗑️ FALLBACK cache expired for global live-queue`);
-    }, 15000); // 15 second cache
+    }, 45000); // 45 second cache (increased from 15)
     cacheTimers.set(cacheKey, timer);
     
-    // Also try to set main cache as backup
+    // Also try to set main cache as backup with longer TTL
     try {
       if (cache.set) {
-        cache.set(cacheKey, chats, 30 * 1000);
+        cache.set(cacheKey, chats, 60 * 1000); // 60 seconds (increased from 30)
         console.log(`🗄️ Main cache also set for global live-queue`);
       }
     } catch (cacheError) {
       console.log(`⚠️ Main cache failed, but fallback cache is working`);
     }
     
-    console.log(`⚡ Global live queue generated in ${Date.now() - startTime}ms (${chats.length} chats)`);
+    const responseTime = Date.now() - startTime;
+    if (responseTime > 500) {
+      console.log(`⚠️ Slow live-queue generation: ${responseTime}ms`);
+    }
+    
+    console.log(`⚡ Global live queue generated in ${responseTime}ms (${chats.length} chats)`);
     res.json(chats);
     
   } catch (error) {

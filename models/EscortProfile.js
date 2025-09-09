@@ -22,4 +22,12 @@ const escortProfileSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// Performance indexes for common queries:
+// 1) Active escorts ordered by recency
+escortProfileSchema.index({ status: 1, createdAt: -1 });
+// 2) Active by gender ordered by recency
+escortProfileSchema.index({ status: 1, gender: 1, createdAt: -1 });
+// 3) Active by country/region ordered by recency
+escortProfileSchema.index({ status: 1, country: 1, region: 1, createdAt: -1 });
+
 module.exports = mongoose.model('EscortProfile', escortProfileSchema);

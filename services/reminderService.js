@@ -240,6 +240,31 @@ class ReminderService {
   }
 
   /**
+   * Handle agent response - mark reminder as handled when agent replies
+   * @param {string} chatId - Chat ID
+   */
+  async handleAgentResponse(chatId) {
+    try {
+      await Chat.findByIdAndUpdate(chatId, {
+        $set: {
+          reminderHandled: true,
+          reminderHandledAt: new Date(),
+          chatType: 'normal' // Reset from reminder type if it was set
+        },
+        $unset: {
+          reminderSnoozedUntil: 1,
+          reminderActive: 1,
+          reminderPriority: 1
+        }
+      });
+
+      console.log(`Marked reminder as handled for chat ${chatId} - agent responded`);
+    } catch (error) {
+      console.error(`Error handling agent response for chat ${chatId}:`, error);
+    }
+  }
+
+  /**
    * Handle customer response - reset reminder flags
    * @param {string} chatId - Chat ID
    */
