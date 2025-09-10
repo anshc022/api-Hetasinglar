@@ -1127,6 +1127,17 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
+        // Stage 2.5: Exclude already-answered panic-room chats from dashboard
+        // Keep panic chats only if there's unread customer messages or last message is from customer
+        $match: {
+          $or: [
+            { isInPanicRoom: { $ne: true } },
+            { $and: [ { isInPanicRoom: true }, { unreadCount: { $gt: 0 } } ] },
+            { $and: [ { isInPanicRoom: true }, { 'lastMessage.sender': 'customer' } ] }
+          ]
+        }
+      },
+      {
         // Stage 3: FAST lookups - only essential data, no deep nesting
         $lookup: {
           from: 'users',
@@ -1364,6 +1375,16 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
             }
           },
           lastMessage: { $arrayElemAt: ['$messages', -1] }
+        }
+      },
+      // Stage 4.5: Exclude already-answered panic-room chats from escort-scoped queue
+      {
+        $match: {
+          $or: [
+            { isInPanicRoom: { $ne: true } },
+            { $and: [ { isInPanicRoom: true }, { unreadCount: { $gt: 0 } } ] },
+            { $and: [ { isInPanicRoom: true }, { 'lastMessage.sender': 'customer' } ] }
+          ]
         }
       },
       
