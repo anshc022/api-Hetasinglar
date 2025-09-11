@@ -6,6 +6,8 @@ const escortRoutes = require('./routes/escortRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const logRoutes = require('./routes/logRoutes');
 const firstContactRoutes = require('./routes/firstContactRoutes');
+const likeRoutes = require('./routes/likeRoutes');
+const fixRoutes = require('./routes/fixRoutes');
 
 const app = express();
 
@@ -24,5 +26,7 @@ app.use('/api/escorts', escortRoutes);
 app.use('/api/chats', chatRoutes); // Ensure this matches the frontend API call
 app.use('/api/logs', logRoutes); // Add logs API routes
 app.use('/api/first-contact', firstContactRoutes); // Add first contact routes
+app.use('/api/likes', likeRoutes); // Add like routes
+app.use('/api/fix', fixRoutes); // Add fix routes for debugging
 
 module.exports = app;

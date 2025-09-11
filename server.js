@@ -16,6 +16,7 @@ const userAssignmentRoutes = require('./routes/userAssignmentRoutes');
 const affiliateRoutes = require('./routes/affiliateRoutes');
 const logRoutes = require('./routes/logRoutes');
 const firstContactRoutes = require('./routes/firstContactRoutes');
+const likeRoutes = require('./routes/likeRoutes');
 const createDefaultAdmin = require('./initAdmin');
 const initializeCommissionSystem = require('./initCommissionSystem');
 const ActiveUsersService = require('./services/activeUsers');
@@ -127,6 +128,7 @@ app.use('/api/user-assignment', userAssignmentRoutes);
 app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/logs', logRoutes); // Add logs API routes
 app.use('/api/first-contact', firstContactRoutes); // Add first contact API routes
+app.use('/api/likes', likeRoutes); // Add likes API routes
 
 // Expose helper to clear fallback live queue cache
 if (typeof agentRoutes.clearLiveQueueFallbackCache === 'function') {

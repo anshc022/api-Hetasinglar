@@ -172,12 +172,14 @@ const adminAuth = async (req, res, next) => {
 const agentAuth = async (req, res, next) => {
   try {
     let token = req.headers.authorization;
+    console.log('🔍 AgentAuth - token received:', token ? 'Token present' : 'No token');
 
     req.agent = null;
     req.user = null;
     req.admin = null;
 
     if (!token) {
+      console.log('❌ AgentAuth - No token, continuing');
       // No token, just continue, routes will protect themselves
       return next();
     }
@@ -187,6 +189,7 @@ const agentAuth = async (req, res, next) => {
     }
 
     if (!token || token === 'undefined' || token === 'null') {
+      console.log('❌ AgentAuth - Invalid token format');
       return res.status(401).json({ message: 'Invalid token format' });
     }
     
