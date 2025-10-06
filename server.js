@@ -1,3 +1,14 @@
+// Environment configuration - load appropriate .env file based on NODE_ENV
+const path = require('path');
+require('dotenv').config({
+  path: process.env.NODE_ENV === 'production' 
+    ? path.join(__dirname, '.env.production')
+    : path.join(__dirname, '.env')
+});
+
+console.log('🌍 Environment:', process.env.NODE_ENV || 'development');
+console.log('📁 Using env file:', process.env.NODE_ENV === 'production' ? '.env.production' : '.env');
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -291,7 +302,14 @@ function startReminderScheduler() {
   }, REMINDER_CHECK_INTERVAL_MS);
 }
 
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://wevogih251:hI236eYIa3sfyYCq@dating.flel6.mongodb.net/hetasinglar?retryWrites=true&w=majority', {
+// MongoDB connection - ensure MONGODB_URI environment variable is set
+if (!process.env.MONGODB_URI) {
+  console.error('🔴 MONGODB_URI environment variable is not set!');
+  console.error('🔧 Please ensure your .env.production file is loaded correctly');
+  process.exit(1);
+}
+
+mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
   // Performance optimizations (updated for latest mongoose)

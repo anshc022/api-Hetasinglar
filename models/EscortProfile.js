@@ -12,6 +12,7 @@ const escortProfileSchema = new mongoose.Schema({
   profession: String,
   height: Number,
   dateOfBirth: Date,
+  description: { type: String, maxlength: 1000 }, // Personal information about the escort
   serialNumber: { type: String, unique: true },
   status: { type: String, enum: ['active', 'inactive', 'pending'], default: 'active' },
   massMailActive: { type: Boolean, default: false },

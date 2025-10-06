@@ -121,10 +121,21 @@ router.get('/escorts/active', async (req, res) => {
         profiles = await inflightFetches.get(cacheKey);
       } else {
         const fetchPromise = (async () => {
+          // Dynamic projection control: default (light) vs full profile fields
+          const baseFields = 'username firstName gender profileImage profilePicture imageUrl country region status createdAt';
+          const extendedFields = baseFields + ' relationshipStatus interests profession height dateOfBirth serialNumber description';
+          const useFull = (req.query.full === 'true');
+
           let query = EscortProfile.find(filter)
-            .select('username firstName gender profileImage profilePicture imageUrl country region status createdAt')
+            .select(useFull ? extendedFields : baseFields)
             .sort({ createdAt: -1 })
             .lean();
+
+          if (useFull) {
+            console.log('[escorts/active] Using FULL projection (includes description & extra fields)');
+          } else {
+            console.log('[escorts/active] Using BASE projection. Pass ?full=true to include additional fields.');
+          }
 
           // Apply index hints when possible to ensure index usage
           try {
@@ -1047,79 +1058,83 @@ router.post('/chats/:chatId/assign', agentAuth, async (req, res) => {
   }
 });
 
-// Get chats for live queue - ULTRA OPTIMIZED with Aggressive Caching
+// Get chats for live queue - ULTRA OPTIMIZED VERSION 2.0
 router.get('/chats/live-queue', agentAuth, async (req, res) => {
   const startTime = Date.now();
   const agentId = req.agent?._id;
   
   try {
-    // Use global cache key since all agents see the same live queue now
-    const cacheKey = `live_queue:global`;
+    // Use global cache key with version for optimized endpoint
+    const cacheKey = `live_queue:global:v2`;
     
-    // Check fallback cache first (guaranteed to work) - Increased TTL for performance
+    // Check fallback cache first - reduced TTL for fresher data
     if (liveQueueCache.has(cacheKey)) {
       const cachedData = liveQueueCache.get(cacheKey);
-      console.log(`🚀 FALLBACK Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
+      console.log(`🚀 OPTIMIZED Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
       return res.json(cachedData);
     }
     
     // Check main cache as backup
-    console.log(`🔍 Checking main cache for key: ${cacheKey}`);
     const cached = cache.get && cache.get(cacheKey);
     if (cached) {
-      console.log(`🚀 Main Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
+      console.log(`🚀 Main Cache HIT: optimized live-queue (${Date.now() - startTime}ms)`);
       return res.json(cached);
     }
     
-    console.log(`❌ Cache MISS: global live-queue - generating fresh data`);
+    console.log(`🔍 Cache MISS: generating optimized live-queue data`);
 
-    // SUPER FAST AGGREGATION - Minimal operations for maximum speed
-    // Only get essential data and use indexes efficiently
+    // STEP 1: Ultra-efficient pre-filter using compound indexes
+    const baseQuery = {
+      $or: [
+        // Active chats (uses status index)
+        { status: { $in: ['new', 'assigned', 'active'] } },
+        // Panic room chats (uses isInPanicRoom index)  
+        { isInPanicRoom: true },
+        // Recent chats only (time-bounded for performance)
+        { 
+          updatedAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }, // Last 24 hours
+          status: { $ne: 'completed' }
+        }
+      ]
+    };
+
+    // STEP 2: Streamlined aggregation pipeline
     const chats = await Chat.aggregate([
       {
-        // Stage 1: Fast index-based match - only active chats
-        $match: {
-          $or: [
-            { status: { $in: ['new', 'assigned', 'active'] } },
-            { isInPanicRoom: true },
-            // Fast unread message check using sparse index
-            { 
-              "messages.readByAgent": false,
-              "messages.sender": "customer"
-            }
-          ]
+        // Stage 1: Fast initial filter using compound indexes
+        $match: baseQuery
+      },
+      {
+        // Stage 2: Add minimal computed fields for speed
+        $addFields: {
+          lastMessages: { $slice: ["$messages", -10] }, // Only last 10 for speed
+          lastMessage: { $arrayElemAt: ["$messages", -1] }
         }
       },
       {
-        // Stage 2: Add only critical calculated fields
+        // Stage 3: Calculate unread count efficiently
         $addFields: {
           unreadCount: {
             $size: {
               $filter: {
-                input: { $slice: ["$messages", -20] }, // Only check last 20 messages for speed
-                as: 'message',
+                input: "$lastMessages",
+                as: "msg", 
                 cond: {
                   $and: [
-                    { $eq: ['$$message.sender', 'customer'] },
-                    { $eq: ['$$message.readByAgent', false] }
+                    { $eq: ["$$msg.sender", "customer"] },
+                    { $eq: ["$$msg.readByAgent", false] }
                   ]
                 }
               }
             }
           },
-          lastMessage: { $arrayElemAt: ['$messages', -1] },
+          // Simplified priority
           priority: {
             $cond: [
-              { $eq: ['$isInPanicRoom', true] }, 5,
+              { $eq: ["$isInPanicRoom", true] }, 5,
               {
                 $cond: [
-                  { $gt: [{ $size: { $filter: { input: { $slice: ["$messages", -10] }, as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 5] }, 4,
-                  {
-                    $cond: [
-                      { $gt: [{ $size: { $filter: { input: { $slice: ["$messages", -10] }, as: 'msg', cond: { $and: [{ $eq: ['$$msg.sender', 'customer'] }, { $eq: ['$$msg.readByAgent', false] }] } } } }, 0] }, 2,
-                      1
-                    ]
-                  }
+                  { $gte: [{ $size: { $ifNull: ["$lastMessages", []] } }, 5] }, 3, 2
                 ]
               }
             ]
@@ -1127,47 +1142,37 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 2.5: Exclude already-answered panic-room chats from dashboard
-        // Keep panic chats only if there's unread customer messages or last message is from customer
+        // Stage 4: Filter relevant chats only
         $match: {
           $or: [
-            { isInPanicRoom: { $ne: true } },
-            { $and: [ { isInPanicRoom: true }, { unreadCount: { $gt: 0 } } ] },
-            { $and: [ { isInPanicRoom: true }, { 'lastMessage.sender': 'customer' } ] }
+            { isInPanicRoom: true },
+            { unreadCount: { $gt: 0 } },
+            { status: { $in: ['new', 'assigned'] } },
+            { $and: [{ reminderActive: true }, { reminderHandled: { $ne: true } }] }
           ]
         }
       },
       {
-        // Stage 3: FAST lookups - only essential data, no deep nesting
+        // Stage 5: Essential lookups with minimal projections
         $lookup: {
           from: 'users',
-          localField: 'customerId',
+          localField: 'customerId', 
           foreignField: '_id',
           as: 'customer',
-          pipeline: [{ 
-            $project: { 
-              username: 1,
-              _id: 1
-            } 
-          }]
+          pipeline: [{ $project: { username: 1, _id: 1 } }]
         }
       },
       {
         $lookup: {
           from: 'escortprofiles',
           localField: 'escortId',
-          foreignField: '_id',
+          foreignField: '_id', 
           as: 'escort',
-          pipeline: [{ 
-            $project: { 
-              firstName: 1,
-              _id: 1
-            } 
-          }]
+          pipeline: [{ $project: { firstName: 1, _id: 1 } }]
         }
       },
       {
-        // Stage 4: Minimal projection for speed
+        // Stage 6: Final projection - essential data only
         $project: {
           _id: 1,
           customerId: { $arrayElemAt: ['$customer', 0] },
@@ -1185,17 +1190,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           chatType: {
             $cond: [
               { $eq: ['$isInPanicRoom', true] }, 'panic',
-              {
-                $cond: [
-                  { $gt: ['$unreadCount', 0] }, 'queue',
-                  {
-                    $cond: [
-                      { $and: [{ $eq: ['$reminderActive', true] }, { $ne: ['$reminderHandled', true] }] }, 'reminder',
-                      'idle'
-                    ]
-                  }
-                ]
-              }
+              { $cond: [{ $gt: ['$unreadCount', 0] }, 'queue', 'idle'] }
             ]
           },
           lastMessage: {
@@ -1203,69 +1198,70 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
               $cond: [
                 { $eq: ['$lastMessage.messageType', 'image'] },
                 '📷 Image',
-                { $substr: ['$lastMessage.message', 0, 100] } // Truncate for performance
+                { $substr: [{ $ifNull: ['$lastMessage.message', ''] }, 0, 50] }
               ]
             },
             messageType: '$lastMessage.messageType',
-            sender: '$lastMessage.sender',
+            sender: '$lastMessage.sender', 
             timestamp: '$lastMessage.timestamp',
             readByAgent: '$lastMessage.readByAgent'
           },
-          hasNewMessages: { $gt: ['$unreadCount', 0] },
-          isUserActive: { $literal: false } // Will be updated after query
+          hasNewMessages: { $gt: ['$unreadCount', 0] }
         }
       },
       {
-        // Stage 5: Fast sort by priority then update time
-        $sort: {
-          priority: -1,
-          updatedAt: -1
-        }
+        // Stage 7: Efficient sort
+        $sort: { priority: -1, updatedAt: -1 }
       },
       {
-        // Stage 6: Limit for performance
-        $limit: 30 // Reduced for faster queries
+        // Stage 8: Performance limit
+        $limit: 25
       }
     ]);
 
-    // Set aggressive fallback cache with 45-second TTL for better performance
+    // STEP 3: Optimized caching with shorter TTL
     liveQueueCache.set(cacheKey, chats);
-    console.log(`💾 FALLBACK cache set for global live-queue`);
+    console.log(`💾 OPTIMIZED cache set for global live-queue`);
     
-    // Clear cache after 45 seconds (increased for performance)
+    // Clear cache after 20 seconds (shorter for fresher data)
     if (cacheTimers.has(cacheKey)) {
       clearTimeout(cacheTimers.get(cacheKey));
     }
     const timer = setTimeout(() => {
       liveQueueCache.delete(cacheKey);
       cacheTimers.delete(cacheKey);
-      console.log(`🗑️ FALLBACK cache expired for global live-queue`);
-    }, 45000); // 45 second cache (increased from 15)
+      console.log(`🗑️ OPTIMIZED cache expired for global live-queue`);
+    }, 20000); // 20 second cache
     cacheTimers.set(cacheKey, timer);
     
-    // Also try to set main cache as backup with longer TTL
+    // Also set main cache
     try {
       if (cache.set) {
-        cache.set(cacheKey, chats, 60 * 1000); // 60 seconds (increased from 30)
-        console.log(`🗄️ Main cache also set for global live-queue`);
+        cache.set(cacheKey, chats, 30 * 1000); // 30 seconds
+        console.log(`🗄️ Main cache also set for optimized live-queue`);
       }
     } catch (cacheError) {
       console.log(`⚠️ Main cache failed, but fallback cache is working`);
     }
-    
+
     const responseTime = Date.now() - startTime;
-    if (responseTime > 500) {
-      console.log(`⚠️ Slow live-queue generation: ${responseTime}ms`);
+    
+    if (responseTime > 1000) {
+      console.log(`🐌 STILL SLOW: optimized live-queue took ${responseTime}ms`);
+    } else if (responseTime > 500) {
+      console.log(`⚠️ Moderate: optimized live-queue took ${responseTime}ms`);  
+    } else {
+      console.log(`⚡ FAST: optimized live-queue took ${responseTime}ms`);
     }
     
-    console.log(`⚡ Global live queue generated in ${responseTime}ms (${chats.length} chats)`);
+    console.log(`🚀 OPTIMIZED Global live queue: ${chats.length} chats in ${responseTime}ms`);
     res.json(chats);
     
   } catch (error) {
-    console.error('Error fetching live queue chats:', error);
-    console.log(`❌ Global live queue failed in ${Date.now() - startTime}ms`);
+    console.error('Error in optimized live queue:', error);
+    console.log(`❌ OPTIMIZED live queue failed in ${Date.now() - startTime}ms`);
     res.status(500).json({ 
-      message: 'Failed to fetch live queue chats',
+      message: 'Failed to fetch optimized live queue chats',
       error: error.message,
       responseTime: Date.now() - startTime
     });
