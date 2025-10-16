@@ -10,6 +10,8 @@ const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
 const crypto = require('crypto');
+const { isValidSwedishRegion, getSwedishRegions } = require('../constants/swedishRegions');
+const { isValidRelationshipStatus, getRelationshipStatuses } = require('../constants/relationshipStatuses');
 // Inflight map to de-duplicate concurrent fetches per cacheKey
 const inflightFetches = new Map();
 
@@ -410,6 +412,32 @@ router.get('/profile', agentAuth, async (req, res) => {
   }
 });
 
+// Get Swedish regions for escort creation
+router.get('/swedish-regions', agentAuth, (req, res) => {
+  try {
+    res.json({
+      success: true,
+      regions: getSwedishRegions()
+    });
+  } catch (error) {
+    console.error('Error fetching Swedish regions:', error);
+    res.status(500).json({ message: 'Failed to fetch regions' });
+  }
+});
+
+// Get relationship statuses for escort creation
+router.get('/relationship-statuses', agentAuth, (req, res) => {
+  try {
+    res.json({
+      success: true,
+      statuses: getRelationshipStatuses()
+    });
+  } catch (error) {
+    console.error('Error fetching relationship statuses:', error);
+    res.status(500).json({ message: 'Failed to fetch relationship statuses' });
+  }
+});
+
 // Get all agents
 router.get('/', async (req, res) => {
   try {
@@ -453,9 +481,44 @@ router.post('/escorts', async (req, res) => {
       });
     }
 
+    // Validate required fields
+    const { username, gender, region } = req.body;
+    if (!username || !gender || !region) {
+      return res.status(400).json({
+        message: 'Username, gender, and region are required',
+        missingFields: {
+          username: !username,
+          gender: !gender,
+          region: !region
+        }
+      });
+    }
+
+    // Validate Swedish region
+    if (!isValidSwedishRegion(region)) {
+      return res.status(400).json({
+        message: 'Invalid region. Please select a valid Swedish region (län)',
+        validRegions: getSwedishRegions(),
+        providedRegion: region
+      });
+    }
+
+    // Validate relationship status if provided
+    const { relationshipStatus } = req.body;
+    if (relationshipStatus && !isValidRelationshipStatus(relationshipStatus)) {
+      return res.status(400).json({
+        message: 'Invalid relationship status. Please select a valid relationship status',
+        validStatuses: getRelationshipStatuses(),
+        providedStatus: relationshipStatus
+      });
+    }
+
     // Generate unique serial number with timestamp and random string
-    const serialNumber = `ESC${Date.now()}${Math.random().toString(36).substr(2, 5)}`;    const escortData = {
+    const serialNumber = `ESC${Date.now()}${Math.random().toString(36).substr(2, 5)}`;    
+    
+    const escortData = {
       ...req.body,
+      country: req.body.country || 'Sweden', // Default to Sweden if not provided
       createdBy: {
         id: req.agent._id,
         type: 'Agent'
@@ -465,6 +528,11 @@ router.post('/escorts', async (req, res) => {
     };
 
     const escort = await EscortProfile.create(escortData);
+    
+    // Invalidate relevant caches so all agents see the new profile
+    cache.delete(`my_escorts:${req.agent._id}`); // Clear creator's cache
+    cache.delete('all_escorts'); // Clear shared cache
+    
     res.status(201).json(escort);
   } catch (error) {
     console.error('Error creating escort profile:', error);
@@ -511,6 +579,45 @@ router.get('/my-escorts', async (req, res) => {
     res.json(escorts);
   } catch (error) {
     console.error('Error fetching agent escorts:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch escorts',
+      error: error.message 
+    });
+  }
+});
+
+// Get all active escort profiles (for all agents to see)
+router.get('/all-escorts', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    // Check cache first
+    const cacheKey = 'all_escorts';
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log(`🚀 Cache HIT: all-escorts (${Date.now() - startTime}ms)`);
+      return res.json(cached);
+    }
+
+    const escorts = await EscortProfile.find({ 
+      status: 'active'
+    })
+    .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats createdBy')
+    .sort({ createdAt: -1 })
+    .lean() // Use lean() for better performance
+    .exec();
+
+    // Cache the results for 2 minutes
+    cache.set(cacheKey, escorts, 120 * 1000);
+    
+    const responseTime = Date.now() - startTime;
+    if (responseTime > 500) {
+      console.log(`⚠️ Slow all-escorts query: ${responseTime}ms`);
+    }
+    
+    res.json(escorts);
+  } catch (error) {
+    console.error('Error fetching all escorts:', error);
     res.status(500).json({ 
       message: 'Failed to fetch escorts',
       error: error.message 
@@ -1870,6 +1977,10 @@ router.put('/escorts/:id', agentAuth, async (req, res) => {
       { new: true }
     );
 
+    // Invalidate relevant caches so all agents see the updated profile
+    cache.delete(`my_escorts:${agentId}`); // Clear creator's cache
+    cache.delete('all_escorts'); // Clear shared cache
+
     res.json(updatedEscort);
   } catch (error) {
     console.error('Error updating escort profile:', error);
@@ -1919,6 +2030,10 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
     } catch (imgErr) {
       console.warn('Warning: failed to deactivate related images for escort', escortId, imgErr?.message);
     }
+
+    // Invalidate relevant caches so all agents see the profile removal
+    cache.delete(`my_escorts:${agentId}`); // Clear creator's cache
+    cache.delete('all_escorts'); // Clear shared cache
 
     return res.json({
       success: true,

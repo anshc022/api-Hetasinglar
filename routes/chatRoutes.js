@@ -723,9 +723,21 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
       return res.status(400).json({ message: 'Invalid message type' });
     }
     
-    // Validate message content
-    if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      return res.status(400).json({ message: 'Message content is required and must be a non-empty string' });
+    // Validate message content - allow empty message for image types
+    if (messageType === 'image') {
+      // For image messages, message can be empty (we have image data instead)
+      if (typeof message !== 'string') {
+        message = ''; // Set to empty string if not provided
+      }
+      // Validate image data is present
+      if (!imageData || !mimeType || !filename) {
+        return res.status(400).json({ message: 'Image data, mimeType, and filename are required for image messages' });
+      }
+    } else {
+      // For text messages, message content is required
+      if (!message || typeof message !== 'string' || message.trim().length === 0) {
+        return res.status(400).json({ message: 'Message content is required and must be a non-empty string' });
+      }
     }
     
     // Find chat and validate with lean query for performance

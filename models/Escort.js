@@ -1,4 +1,6 @@
 const mongoose = require('mongoose');
+const { SWEDISH_REGIONS } = require('../constants/swedishRegions');
+const { RELATIONSHIP_STATUSES } = require('../constants/relationshipStatuses');
 
 // Add debugging methods that can be used in routes
 async function verifyDbConnection() {
@@ -81,15 +83,19 @@ const escortSchema = new mongoose.Schema({
   },
   country: {
     type: String,
-    trim: true
+    trim: true,
+    default: 'Sweden'
   },
   region: {
     type: String,
-    trim: true
+    trim: true,
+    enum: SWEDISH_REGIONS,
+    required: true
   },
   relationshipStatus: {
     type: String,
-    trim: true
+    trim: true,
+    enum: RELATIONSHIP_STATUSES
   },
   interests: [{
     type: String

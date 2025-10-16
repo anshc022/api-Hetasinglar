@@ -1,13 +1,15 @@
 const mongoose = require('mongoose');
+const { SWEDISH_REGIONS } = require('../constants/swedishRegions');
+const { RELATIONSHIP_STATUSES } = require('../constants/relationshipStatuses');
 
 const escortProfileSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true },
   firstName: String,
   gender: { type: String, enum: ['male', 'female'] },
   profileImage: String,
-  country: String,
-  region: String,
-  relationshipStatus: String,
+  country: { type: String, default: 'Sweden' },
+  region: { type: String, enum: SWEDISH_REGIONS, required: true },
+  relationshipStatus: { type: String, enum: RELATIONSHIP_STATUSES },
   interests: [String],
   profession: String,
   height: Number,

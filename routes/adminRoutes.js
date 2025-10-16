@@ -7,7 +7,8 @@ const Chat = require('../models/Chat');  // Add this import
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
 const SubscriptionPlan = require('../models/SubscriptionPlan'); // Add this import
-const Escort = require('../models/Escort');
+const { isValidSwedishRegion, getSwedishRegions } = require('../constants/swedishRegions');
+const { isValidRelationshipStatus, getRelationshipStatuses } = require('../constants/relationshipStatuses');
 const EscortProfile = require('../models/EscortProfile');
 const AffiliateLink = require('../models/AffiliateLink');
 const { adminAuth } = require('../auth');
@@ -988,6 +989,32 @@ router.delete('/assignments/:id', adminAuth, async (req, res) => {
 
 // ============== ESCORT MANAGEMENT ROUTES ==============
 
+// Get Swedish regions for dropdown
+router.get('/swedish-regions', adminAuth, (req, res) => {
+  try {
+    res.json({
+      success: true,
+      regions: getSwedishRegions()
+    });
+  } catch (error) {
+    console.error('Error fetching Swedish regions:', error);
+    res.status(500).json({ error: 'Failed to fetch regions' });
+  }
+});
+
+// Get relationship statuses for dropdown
+router.get('/relationship-statuses', adminAuth, (req, res) => {
+  try {
+    res.json({
+      success: true,
+      statuses: getRelationshipStatuses()
+    });
+  } catch (error) {
+    console.error('Error fetching relationship statuses:', error);
+    res.status(500).json({ error: 'Failed to fetch relationship statuses' });
+  }
+});
+
 // Get all escorts
 router.get('/escorts', adminAuth, async (req, res) => {
   try {
@@ -1080,8 +1107,27 @@ router.post('/escorts', adminAuth, async (req, res) => {
     } = req.body;
     
     // Validation
-    if (!username || !gender) {
-      return res.status(400).json({ error: 'Username and gender are required' });
+    if (!username || !gender || !region) {
+      return res.status(400).json({ 
+        error: 'Username, gender, and region are required' 
+      });
+    }
+    
+    // Validate Swedish region
+    if (!isValidSwedishRegion(region)) {
+      return res.status(400).json({ 
+        error: 'Invalid region. Please select a valid Swedish region (län)',
+        validRegions: getSwedishRegions()
+      });
+    }
+    
+    // Validate relationship status if provided
+    if (relationshipStatus && !isValidRelationshipStatus(relationshipStatus)) {
+      return res.status(400).json({
+        error: 'Invalid relationship status. Please select a valid relationship status',
+        validStatuses: getRelationshipStatuses(),
+        providedStatus: relationshipStatus
+      });
     }
     
     // Check if username already exists
@@ -1095,8 +1141,8 @@ router.post('/escorts', adminAuth, async (req, res) => {
       firstName: firstName?.trim() || '',
       gender,
       profileImage: profileImage || '',
-      country: country?.trim() || '',
-      region: region?.trim() || '',
+      country: country?.trim() || 'Sweden',
+      region: region,
       relationshipStatus: relationshipStatus?.trim() || '',
       interests: interests || [],
       profession: profession?.trim() || '',
