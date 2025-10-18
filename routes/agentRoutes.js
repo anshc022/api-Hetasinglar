@@ -41,6 +41,77 @@ function clearLiveQueueFallbackCache() {
 router.clearLiveQueueFallbackCache = clearLiveQueueFallbackCache;
 
 // Agent login - moved before auth middleware
+let pendingConnectionPromise = null;
+
+async function ensureDatabaseConnection() {
+  const targetState = mongoose.connection.readyState;
+
+  if (targetState === 1) {
+    return;
+  }
+
+  if (targetState === 2) {
+    if (!pendingConnectionPromise) {
+      pendingConnectionPromise = new Promise((resolve, reject) => {
+        const onConnected = () => {
+          cleanup();
+          resolve();
+        };
+
+        const onError = (err) => {
+          cleanup();
+          reject(err);
+        };
+
+        function cleanup() {
+          mongoose.connection.removeListener('connected', onConnected);
+          mongoose.connection.removeListener('error', onError);
+        }
+
+        mongoose.connection.once('connected', onConnected);
+        mongoose.connection.once('error', onError);
+
+        setTimeout(() => {
+          cleanup();
+          reject(new Error('MongoDB connection attempt timed out while connecting'));
+        }, 10000);
+      }).finally(() => {
+        pendingConnectionPromise = null;
+      });
+    }
+
+    await pendingConnectionPromise;
+    return;
+  }
+
+  const mongoUri = process.env.MONGODB_URI;
+  if (!mongoUri) {
+    throw new Error('MONGODB_URI environment variable is not configured');
+  }
+
+  if (targetState === 3) {
+    try {
+      await mongoose.disconnect();
+    } catch (disconnectErr) {
+      console.warn('Failed to complete disconnect before reconnect attempt:', disconnectErr.message);
+    }
+  }
+
+  pendingConnectionPromise = mongoose.connect(mongoUri, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+    maxIdleTimeMS: 30000,
+    family: 4
+  }).finally(() => {
+    pendingConnectionPromise = null;
+  });
+
+  await pendingConnectionPromise;
+}
+
 router.post('/login', async (req, res) => {
   try {
     const { agentId, password } = req.body;
@@ -48,6 +119,8 @@ router.post('/login', async (req, res) => {
     if (!agentId || !password) {
       return res.status(400).json({ message: 'All fields are required' });
     }
+
+    await ensureDatabaseConnection();
 
     const agent = await Agent.findOne({ agentId });
 
@@ -79,9 +152,31 @@ router.post('/login', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching escort profiles:', error);
+    console.error('Agent login error:', error);
+
+    if (error.message?.includes('buffering timed out') || error.name === 'MongooseNetworkError') {
+      return res.status(503).json({
+        message: 'Temporarily unable to reach the database. Please try again in a moment.',
+        error: error.message
+      });
+    }
+
     res.status(500).json({
-      message: 'Failed to fetch escort profiles',
+      message: 'Failed to log in agent',
+      error: error.message
+    });
+  }
+});
+
+// Ensure database connection for all subsequent agent routes
+router.use(async (req, res, next) => {
+  try {
+    await ensureDatabaseConnection();
+    next();
+  } catch (error) {
+    console.error('MongoDB connection middleware error:', error);
+    res.status(503).json({
+      message: 'Service temporarily unavailable due to database connectivity issues',
       error: error.message
     });
   }
