@@ -16,7 +16,7 @@ const CommissionSettings = require('../models/CommissionSettings');
 const router = express.Router();
 
 // Use a consistent frontend URL (avoid localhost in production)
-const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://hotsingles.se').replace(/\/$/, '');
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://hetasinglar.se').replace(/\/$/, '');
 
 // Admin Auth (no auth middleware needed for login)
 router.post('/login', async (req, res) => {
