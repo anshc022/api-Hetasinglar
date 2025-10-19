@@ -32,7 +32,7 @@ jobs:
           NODE_ENV=production
           
           # Frontend Configuration
-          FRONTEND_URL=https://hetasinglar.vercel.app
+          FRONTEND_URL=http://hotsingles.se
           
           # CORS Configuration
           ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS }}

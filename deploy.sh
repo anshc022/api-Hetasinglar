@@ -95,8 +95,8 @@ else
     cat > .env << 'EOF'
 PORT=5000
 NODE_ENV=production
-FRONTEND_URL=https://hetasinglar.vercel.app
-ALLOWED_ORIGINS=https://hetasinglar.vercel.app
+FRONTEND_URL=http://hotsingles.se
+ALLOWED_ORIGINS=http://hotsingles.se,http://www.hotsingles.se,http://16.171.8.139
 EOF
 fi
 

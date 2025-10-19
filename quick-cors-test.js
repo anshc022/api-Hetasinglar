@@ -7,7 +7,7 @@ function testCors() {
     path: '/api/health',
     method: 'GET',
     headers: {
-      'Origin': 'https://hetasinglar.vercel.app'
+  'Origin': 'http://hotsingles.se'
     }
   };
 

@@ -8,7 +8,7 @@ const User = require('../models/User');
 const { adminAuth, agentAuth } = require('../auth');
 
 // Use a consistent frontend URL (avoid localhost in production)
-const FRONTEND_URL = (process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app').replace(/\/$/, '');
+const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://hotsingles.se').replace(/\/$/, '');
 
 
 // Get affiliate dashboard data for agent

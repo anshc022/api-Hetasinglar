@@ -30,8 +30,8 @@ JWT_SECRET=your-production-secret-key-here
 
 # Production Environment Settings
 NODE_ENV=production
-FRONTEND_URL=https://hetasinglar.vercel.app
-ALLOWED_ORIGINS=https://hetasinglar.vercel.app,https://hetasinglar.onrender.com,https://www.hetasinglar.onrender.com
+FRONTEND_URL=http://hotsingles.se
+ALLOWED_ORIGINS=http://hotsingles.se,http://www.hotsingles.se,http://16.171.8.139
 
 # Production Security Settings
 SESSION_SECRET=your-production-session-secret

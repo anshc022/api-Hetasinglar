@@ -8,7 +8,7 @@ function testEndpoint(path, description) {
       path,
       method: 'POST',
       headers: {
-        'Origin': 'https://hetasinglar.vercel.app',
+  'Origin': 'http://hotsingles.se',
         'Content-Type': 'application/json'
       }
     };
@@ -50,7 +50,7 @@ function testEndpoint(path, description) {
 
 async function runTests() {
   console.log('🚀 CORS Credentials Test');
-  console.log('Frontend: https://hetasinglar.vercel.app');
+  console.log('Frontend: http://hotsingles.se');
   console.log('Backend: https://apihetasinglar.duckdns.org');
   
   await testEndpoint('/api/health', 'Health Check');
@@ -60,7 +60,7 @@ async function runTests() {
   
   console.log('\n📋 Summary:');
   console.log('For credentialed requests (withCredentials: true), we need:');
-  console.log('- Access-Control-Allow-Origin: https://hetasinglar.vercel.app (specific, not *)');
+  console.log('- Access-Control-Allow-Origin: http://hotsingles.se (specific, not *)');
   console.log('- Access-Control-Allow-Credentials: true');
 }
 

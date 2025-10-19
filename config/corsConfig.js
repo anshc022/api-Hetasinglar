@@ -10,11 +10,10 @@ const corsConfig = {
   
   // Production origins
   production: [
-    'https://hetasinglar.vercel.app',
-    'https://www.hetasinglar.vercel.app',
-    'https://hetasinglar.onrender.com',
-    'https://www.hetasinglar.onrender.com',
-    'https://apihetasinglar.duckdns.org',  // Add DuckDNS domain for WebSocket connections
+    'http://hotsingles.se',
+    'http://www.hotsingles.se',
+    'http://16.171.8.139',
+    'https://apihetasinglar.duckdns.org',  // API/WebSocket domain
   ],
   
   // Get allowed origins based on environment

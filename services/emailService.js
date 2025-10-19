@@ -133,7 +133,7 @@ const sendWelcomeEmail = async (email, username) => {
 
 // Send password reset email
 const sendPasswordResetEmail = async (email, resetToken, username) => {
-  const resetUrl = `${process.env.FRONTEND_URL || 'https://hetasinglar.vercel.app'}/reset-password?token=${resetToken}`;
+  const resetUrl = `${process.env.FRONTEND_URL || 'http://hotsingles.se'}/reset-password?token=${resetToken}`;
   
   const mailOptions = {
     from: {
