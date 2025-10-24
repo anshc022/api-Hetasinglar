@@ -4,7 +4,7 @@ echo "📦 Complete HetaSinglar Backend Deployment to EC2"
 echo "================================================="
 
 # Configuration
-EC2_HOST="13.51.56.220"
+EC2_HOST="13.48.194.178"
 EC2_USER="ec2-user"
 KEY_FILE="hetasinglar-key.pem"
 REMOTE_DIR="/home/ec2-user/api-Hetasinglar"

@@ -10,9 +10,9 @@ const corsConfig = {
   
   // Production origins
   production: [
-    'http://hetasinglar.se',
-    'http://www.hetasinglar.se',
-    'http://16.171.8.139',
+    'https://hetasinglar.se',
+    'https://www.hetasinglar.se',
+    'http://13.48.194.178',
     'https://apihetasinglar.duckdns.org',  // API/WebSocket domain
   ],
   

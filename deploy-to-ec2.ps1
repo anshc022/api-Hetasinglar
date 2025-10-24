@@ -2,7 +2,7 @@
 param(
     [string]$PemFile = "F:\vercal\Hetasinglar\backend\api-Hetasinglar\hetasinglar-key.pem",
     [string]$EC2User = "ec2-user", 
-    [string]$EC2Host = "13.51.56.220",
+    [string]$EC2Host = "13.48.194.178",
     [switch]$TestOnly = $false
 )
 

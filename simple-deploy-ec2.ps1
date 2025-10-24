@@ -1,7 +1,7 @@
 # Simple EC2 Database Fix Deployment Script
 $PemFile = "F:\vercal\Hetasinglar\backend\api-Hetasinglar\hetasinglar-key.pem"
 $EC2User = "ec2-user"
-$EC2Host = "13.51.56.220"
+$EC2Host = "13.48.194.178"
 
 Write-Host "🚀 Deploying Database Fix to EC2..." -ForegroundColor Green
 Write-Host "🔑 PEM File: $PemFile" -ForegroundColor Cyan

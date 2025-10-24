@@ -100,21 +100,21 @@ try {
     Write-Host ""
     Write-Host "🎉 Security group configuration complete!" -ForegroundColor Green
     Write-Host "   Your API should now be accessible at:" -ForegroundColor Gray
-    Write-Host "   http://13.51.56.220:5000/api/health" -ForegroundColor White
+    Write-Host "   http://13.48.194.178:5000/api/health" -ForegroundColor White
     Write-Host ""
     Write-Host "🧪 Testing API access..." -ForegroundColor Blue
     
     # Test API access
     Start-Sleep -Seconds 2
     try {
-        $response = Invoke-WebRequest -Uri "http://13.51.56.220:5000/api/health" -Method GET -TimeoutSec 10
+        $response = Invoke-WebRequest -Uri "http://13.48.194.178:5000/api/health" -Method GET -TimeoutSec 10
         if ($response.StatusCode -eq 200) {
             Write-Host "✅ API is now accessible!" -ForegroundColor Green
             Write-Host "   Response: $($response.Content)" -ForegroundColor Gray
         }
     } catch {
         Write-Host "⚠️  API test failed. It may take a few moments for changes to propagate." -ForegroundColor Yellow
-        Write-Host "   Try again in 30 seconds: http://13.51.56.220:5000/api/health" -ForegroundColor Gray
+        Write-Host "   Try again in 30 seconds: http://13.48.194.178:5000/api/health" -ForegroundColor Gray
     }
 
 } catch {

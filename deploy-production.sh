@@ -65,7 +65,7 @@ JWT_SECRET=hetasinglar-prod-jwt-secret-2025
 # Production Environment Settings
 NODE_ENV=production
 FRONTEND_URL=http://hotsingles.se
-ALLOWED_ORIGINS=http://hotsingles.se,http://www.hotsingles.se,http://16.171.8.139
+ALLOWED_ORIGINS=http://hotsingles.se,http://www.hotsingles.se,http://13.48.194.178
 
 # Production Security Settings
 SESSION_SECRET=hetasinglar-prod-session-secret-2025

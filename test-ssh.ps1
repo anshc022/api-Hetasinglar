@@ -1,7 +1,7 @@
 # Quick EC2 Test Script
 $PemFile = "F:\vercal\Hetasinglar\backend\api-Hetasinglar\hetasinglar-key.pem"
 $EC2User = "ec2-user"
-$EC2Host = "13.51.56.220"
+$EC2Host = "13.48.194.178"
 
 Write-Host "Testing SSH connection to EC2..." -ForegroundColor Green
 

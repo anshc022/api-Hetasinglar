@@ -2,7 +2,7 @@
 
 echo "📤 Uploading production scripts to EC2..."
 
-EC2_HOST="13.51.56.220"
+EC2_HOST="13.48.194.178"
 EC2_USER="ec2-user"
 KEY_FILE="hetasinglar-key.pem"
 
