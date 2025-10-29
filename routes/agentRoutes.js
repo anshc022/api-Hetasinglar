@@ -658,7 +658,7 @@ router.get('/my-escorts', async (req, res) => {
       ],
       status: 'active'
     })
-    .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats')
+  .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats description')
     .sort({ createdAt: -1 })
     .lean() // Use lean() for better performance
     .exec();
@@ -697,7 +697,7 @@ router.get('/all-escorts', async (req, res) => {
     const escorts = await EscortProfile.find({ 
       status: 'active'
     })
-    .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats createdBy')
+  .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats createdBy description')
     .sort({ createdAt: -1 })
     .lean() // Use lean() for better performance
     .exec();
