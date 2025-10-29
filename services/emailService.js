@@ -1,12 +1,14 @@
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 
-// Email configuration
+// Email configuration using environment variables
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: process.env.SMTP_HOST || 'mailcluster.loopia.se',
+  port: parseInt(process.env.SMTP_PORT) || 465,
+  secure: true, // Use SSL
   auth: {
-    user: 'anshc022@gmail.com',
-    pass: 'efof ysyz efyt jlvh' // App password
+    user: process.env.EMAIL_USER || 'contact@hetasinglar.se',
+    pass: process.env.EMAIL_PASS || 'be3SnVqktRu9'
   }
 });
 
@@ -25,7 +27,7 @@ const sendOTPEmail = async (email, otp, username) => {
   const mailOptions = {
     from: {
       name: 'Hetasinglar',
-      address: 'anshc022@gmail.com'
+      address: process.env.EMAIL_USER || 'contact@hetasinglar.se'
     },
     to: email,
     subject: 'Verify Your Email - Hetasinglar',
@@ -82,7 +84,7 @@ const sendWelcomeEmail = async (email, username) => {
   const mailOptions = {
     from: {
       name: 'Hetasinglar',
-      address: 'anshc022@gmail.com'
+      address: process.env.EMAIL_USER || 'contact@hetasinglar.se'
     },
     to: email,
     subject: 'Welcome to Hetasinglar!',
@@ -138,7 +140,7 @@ const sendPasswordResetEmail = async (email, resetToken, username) => {
   const mailOptions = {
     from: {
       name: 'Hetasinglar',
-      address: 'anshc022@gmail.com'
+      address: process.env.EMAIL_USER || 'contact@hetasinglar.se'
     },
     to: email,
     subject: 'Reset Your Password - Hetasinglar',
