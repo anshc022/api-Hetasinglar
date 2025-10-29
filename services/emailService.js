@@ -217,5 +217,55 @@ module.exports = {
   sendOTPEmail,
   sendWelcomeEmail,
   sendPasswordResetEmail,
-  testEmailConnection
+  testEmailConnection,
+  // Added export for message notification emails
+  sendMessageNotification: async (toEmail, toUsername, fromDisplayName, messageSnippet, chatLink) => {
+    const safeSnippet = (messageSnippet || '').toString().slice(0, 160);
+    const preview = safeSnippet.length === 160 ? `${safeSnippet}…` : safeSnippet;
+
+    const mailOptions = {
+      from: {
+        name: 'Hetasinglar',
+        address: process.env.EMAIL_USER || 'contact@hetasinglar.se'
+      },
+      to: toEmail,
+      subject: `${fromDisplayName || 'New message'} sent you a message on Hetasinglar`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+          <div style="background: linear-gradient(135deg, #f43f5e, #ec4899); padding: 24px; border-radius: 10px 10px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 22px;">New message from ${fromDisplayName || 'an escort'}</h1>
+          </div>
+
+          <div style="background: white; padding: 24px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06);">
+            <p style="color: #333; margin: 0 0 8px 0;">Hi ${toUsername || 'there'},</p>
+            <p style="color: #555; line-height: 1.6; margin: 0 0 16px 0;">
+              ${fromDisplayName || 'An escort'} just sent you a message on Hetasinglar.
+            </p>
+            ${preview ? `
+              <div style="background: #f8f9fa; border-left: 4px solid #f43f5e; padding: 12px 14px; margin: 12px 0; color: #444;">
+                <strong>Preview:</strong>
+                <div style="margin-top: 6px; color: #444; white-space: pre-wrap;">${preview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+              </div>
+            ` : ''}
+            <div style="text-align: center; margin: 22px 0;">
+              <a href="${chatLink || process.env.FRONTEND_URL || 'https://hetasinglar.se'}" 
+                 style="background: #f43f5e; color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold;">
+                View message
+              </a>
+            </div>
+            <p style="color: #888; font-size: 12px; margin: 14px 0 0 0;">You receive these alerts because email updates are enabled in your profile preferences.</p>
+          </div>
+        </div>
+      `
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+      console.log('Message notification email sent to:', toEmail);
+      return true;
+    } catch (error) {
+      console.error('Error sending message notification email:', error);
+      return false;
+    }
+  }
 };

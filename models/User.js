@@ -113,7 +113,22 @@ const userSchema = new mongoose.Schema({
     notifications: { type: Boolean, default: true },
     emailUpdates: { type: Boolean, default: true },
     language: { type: String, default: 'en' },
-    timezone: { type: String, default: 'UTC' }
+    timezone: { type: String, default: 'UTC' },
+    // Granular notification settings (backward compatible)
+    notificationSettings: {
+      email: {
+        messages: {
+          enabled: { type: Boolean, default: true },
+          // Only send if user has been offline for at least N minutes (0 = always)
+          onlyWhenOfflineMinutes: { type: Number, default: 10, min: 0 },
+          // Optional per-escort overrides
+          perEscort: [{
+            escortId: { type: mongoose.Schema.Types.ObjectId, ref: 'EscortProfile' },
+            enabled: { type: Boolean, default: true }
+          }]
+        }
+      }
+    }
   },
   
   // Profile information

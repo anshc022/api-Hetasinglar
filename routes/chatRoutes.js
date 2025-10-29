@@ -9,6 +9,7 @@ const User = require('../models/User');
 const Earnings = require('../models/Earnings');
 const { auth, agentAuth } = require('../auth');
 const ActiveUsersService = require('../services/activeUsers');
+const emailService = require('../services/emailService');
 const cache = require('../services/cache'); // Global cache service
 const reminderService = require('../services/reminderService');
 const mongoose = require('mongoose');
@@ -1016,6 +1017,76 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
               }
             }
           });
+        }
+
+        // Email notification to customer when agent sends a new message
+        try {
+          if (req.agent) {
+            // Throttle notifications per chat to avoid spam (5 minutes lock)
+            const lockKey = `email_notify_lock:${chat._id}`;
+            const locked = cache.get(lockKey);
+            const activeMap = ActiveUsersService.getActiveUsers();
+            const uid = chat.customerId?.toString();
+            const isUserActive = !!(uid && activeMap && activeMap.has(uid));
+
+            if (!locked) {
+              // Fetch user and escort details minimal fields
+              const [userDoc, escortDoc] = await Promise.all([
+                User.findById(chat.customerId).select('email username preferences lastActiveDate').lean(),
+                EscortProfile.findById(chat.escortId).select('firstName').lean()
+              ]);
+
+              const emailOk = !!(userDoc?.email);
+              const wantsEmails = !!(userDoc?.preferences?.emailUpdates !== false && userDoc?.preferences?.notifications !== false);
+
+              // Granular settings
+              const msgSettings = userDoc?.preferences?.notificationSettings?.email?.messages;
+              const granularEnabled = (msgSettings?.enabled !== false);
+              const offlineMin = Math.max(0, parseInt(msgSettings?.onlyWhenOfflineMinutes ?? 10));
+              // If an offline threshold is set, suppress emails while user is considered "online"
+              let passesOfflineRule = true;
+              if (offlineMin > 0) {
+                if (isUserActive) {
+                  passesOfflineRule = false;
+                } else if (userDoc?.lastActiveDate) {
+                  const lastActive = new Date(userDoc.lastActiveDate).getTime();
+                  const msSince = Date.now() - lastActive;
+                  passesOfflineRule = msSince >= offlineMin * 60 * 1000;
+                }
+              }
+
+              // Per-escort override: if present for this escort, require enabled=true
+              let passesPerEscort = true;
+              const overrides = msgSettings?.perEscort || [];
+              if (overrides.length) {
+                const found = overrides.find(o => o.escortId?.toString() === (chat.escortId?.toString?.() || String(chat.escortId)));
+                if (found && found.enabled === false) {
+                  passesPerEscort = false;
+                }
+              }
+
+              if (emailOk && wantsEmails && granularEnabled && passesOfflineRule && passesPerEscort) {
+                const fromName = escortDoc?.firstName || 'Escort';
+                const snippet = newMessage.messageType === 'image' ? '📷 Image message' : (newMessage.message || '');
+                const chatLink = process.env.FRONTEND_URL || 'https://hetasinglar.se';
+                try {
+                  await emailService.sendMessageNotification(
+                    userDoc.email,
+                    userDoc.username,
+                    fromName,
+                    snippet,
+                    chatLink
+                  );
+                  // Set throttle lock for 5 minutes
+                  cache.set(lockKey, true, 5 * 60 * 1000);
+                } catch (mailErr) {
+                  console.warn('Email notification send failed:', mailErr?.message || mailErr);
+                }
+              }
+            }
+          }
+        } catch (notifyErr) {
+          console.warn('Notification block error:', notifyErr?.message || notifyErr);
         }
 
         console.log(`⚡ Background operations completed for chat ${chat._id}`);
