@@ -10,7 +10,7 @@ const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
 const crypto = require('crypto');
-const { isValidSwedishRegion, getSwedishRegions } = require('../constants/swedishRegions');
+const { isValidSwedishRegion, getSwedishRegions, normalizeSwedishRegion } = require('../constants/swedishRegions');
 const { isValidRelationshipStatus, getRelationshipStatuses } = require('../constants/relationshipStatuses');
 // Inflight map to de-duplicate concurrent fetches per cacheKey
 const inflightFetches = new Map();
@@ -577,7 +577,15 @@ router.post('/escorts', async (req, res) => {
     }
 
     // Validate required fields
-    const { username, gender, region } = req.body;
+    const { username, gender } = req.body;
+    // Normalize Swedish region input to canonical form if possible
+    if (req.body && typeof req.body.region === 'string') {
+      const normalized = normalizeSwedishRegion(req.body.region);
+      if (normalized) {
+        req.body.region = normalized;
+      }
+    }
+    const region = req.body.region;
     if (!username || !gender || !region) {
       return res.status(400).json({
         message: 'Username, gender, and region are required',

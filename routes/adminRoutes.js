@@ -1113,8 +1113,15 @@ router.post('/escorts', adminAuth, async (req, res) => {
       });
     }
     
-    // Validate Swedish region
-    if (!isValidSwedishRegion(region)) {
+    // Normalize and validate Swedish region
+    let normalizedRegion = region;
+    if (typeof region === 'string') {
+      try {
+        const { normalizeSwedishRegion } = require('../constants/swedishRegions');
+        normalizedRegion = normalizeSwedishRegion(region) || region;
+      } catch {}
+    }
+    if (!isValidSwedishRegion(normalizedRegion)) {
       return res.status(400).json({ 
         error: 'Invalid region. Please select a valid Swedish region (län)',
         validRegions: getSwedishRegions()
@@ -1142,7 +1149,7 @@ router.post('/escorts', adminAuth, async (req, res) => {
       gender,
       profileImage: profileImage || '',
       country: country?.trim() || 'Sweden',
-      region: region,
+      region: normalizedRegion,
       relationshipStatus: relationshipStatus?.trim() || '',
       interests: interests || [],
       profession: profession?.trim() || '',
@@ -1193,7 +1200,15 @@ router.put('/escorts/:id', adminAuth, async (req, res) => {
     if (gender !== undefined) updateData.gender = gender;
     if (profileImage !== undefined) updateData.profileImage = profileImage;
     if (country !== undefined) updateData.country = country?.trim();
-    if (region !== undefined) updateData.region = region?.trim();
+    if (region !== undefined) {
+      let normalizedRegionUpdate = region?.trim();
+      try {
+        const { normalizeSwedishRegion } = require('../constants/swedishRegions');
+        const norm = normalizeSwedishRegion(region);
+        if (norm) normalizedRegionUpdate = norm;
+      } catch {}
+      updateData.region = normalizedRegionUpdate;
+    }
     if (relationshipStatus !== undefined) updateData.relationshipStatus = relationshipStatus?.trim();
     if (interests !== undefined) updateData.interests = interests;
     if (profession !== undefined) updateData.profession = profession?.trim();
