@@ -65,8 +65,8 @@ jobs:
             ls -la
             if command -v node >/dev/null 2>&1; then node -v; fi
             if command -v npm >/dev/null 2>&1; then npm -v; fi
-            chmod +x deploy.sh
-            ./deploy.sh
+            chmod +x deploy-production.sh
+            ./deploy-production.sh
 
       - name: Deployment Status
         if: always()
