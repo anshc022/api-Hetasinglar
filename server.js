@@ -8,6 +8,7 @@ require('dotenv').config({
 
 console.log('🌍 Environment:', process.env.NODE_ENV || 'development');
 console.log('📁 Using env file:', process.env.NODE_ENV === 'production' ? '.env.production' : '.env');
+console.log('🔄 Deployment trigger: 2025-11-06');
 
 const express = require('express');
 const mongoose = require('mongoose');
