@@ -230,11 +230,11 @@ router.get('/escorts/active', async (req, res) => {
     const region = req.query.region;
     
     // performanceMonitor.recordPhase(requestId, 'init', {
-      full: req.query.full,
-      filters: {gender, country, region},
-      pagination: page > 0,
-      pageSize
-    });
+    //   full: req.query.full,
+    //   filters: {gender, country, region},
+    //   pagination: page > 0,
+    //   pageSize
+    // });
     
     // Warn about potentially expensive full queries
     if (req.query.full === 'true' && !page) {
@@ -357,9 +357,9 @@ router.get('/escorts/active', async (req, res) => {
       
       cache.set(cacheKey, profiles, ttl);
       // performanceMonitor.recordPhase(requestId, 'db-complete', { 
-        resultCount: profiles.length,
-        ttl: ttl/1000
-      });
+      //   resultCount: profiles.length,
+      //   ttl: ttl/1000
+      // });
       console.log(`[${requestId}] Cached ${profiles.length} escort profiles (TTL ${ttl/1000}s)`);
     } else {
       cached = true;
