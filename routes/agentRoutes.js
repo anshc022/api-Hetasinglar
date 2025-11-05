@@ -229,6 +229,8 @@ router.get('/escorts/active', async (req, res) => {
     const gender = req.query.gender;
     const country = req.query.country;
     const region = req.query.region;
+    // Normalize full flag once at route scope so it's available everywhere
+    const useFull = String(req.query.full || '').toLowerCase() === 'true';
     
     // performanceMonitor.recordPhase(requestId, 'init', {
     //   full: req.query.full,
@@ -273,7 +275,6 @@ router.get('/escorts/active', async (req, res) => {
           const essentialFields = '_id username firstName profileImage profilePicture imageUrl country region status createdAt';
           // UI-focused full selection - only fields actually used by frontend
           const uiOptimizedFields = essentialFields + ' interests profession';
-          const useFull = (req.query.full === 'true');
 
           let query = EscortProfile.find(filter)
             .select(useFull ? uiOptimizedFields : essentialFields)
