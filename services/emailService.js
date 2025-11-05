@@ -102,6 +102,16 @@ const sendWelcomeEmail = async (email, username) => {
             Congratulations! Your email has been successfully verified and your account is now active. You can now enjoy all the features of Hetasinglar.
           </p>
           
+          <div style="background: #f0f9ff; border: 2px solid #0ea5e9; padding: 20px; border-radius: 8px; margin: 25px 0; text-align: center;">
+            <h3 style="color: #0ea5e9; margin: 0 0 10px 0; font-size: 18px;">🎉 Welcome Bonus!</h3>
+            <p style="color: #374151; margin: 0; font-size: 16px; font-weight: bold;">
+              You've received <span style="color: #f43f5e;">5 free coins</span> to start chatting!
+            </p>
+            <p style="color: #6b7280; margin: 5px 0 0 0; font-size: 14px;">
+              Use your coins to send messages and connect with amazing people.
+            </p>
+          </div>
+          
           <div style="text-align: center; margin: 30px 0;">
             <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}" 
                style="background: #f43f5e; color: white; padding: 12px 30px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold;">
