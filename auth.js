@@ -466,8 +466,18 @@ router.post('/verify-otp', async (req, res) => {
       status: 'active'
     });
 
+    // Reload user to apply post-verify actions
+    const verifiedUser = await User.findById(userId);
+
+    // Grant 5 free welcome coins exactly once
+    try {
+      await verifiedUser.grantWelcomeBonus(5);
+    } catch (e) {
+      console.warn('Welcome bonus grant failed:', e?.message || e);
+    }
+
     // Send welcome email
-    await emailService.sendWelcomeEmail(user.email, user.username);
+    await emailService.sendWelcomeEmail(verifiedUser.email, verifiedUser.username);
 
     // Generate JWT token
     const token = jwt.sign(
@@ -477,13 +487,14 @@ router.post('/verify-otp', async (req, res) => {
     );
 
     const userResponse = {
-      _id: user._id,
-      username: user.username,
-      email: user.email,
-      full_name: user.full_name,
-      dateOfBirth: user.dateOfBirth,
-      sex: user.sex,
-      emailVerified: true
+      _id: verifiedUser._id,
+      username: verifiedUser.username,
+      email: verifiedUser.email,
+      full_name: verifiedUser.full_name,
+      dateOfBirth: verifiedUser.dateOfBirth,
+      sex: verifiedUser.sex,
+      emailVerified: true,
+      coins: { balance: verifiedUser.coins?.balance || 0 }
     };
 
     res.status(200).json({ 

@@ -82,6 +82,15 @@ const userSchema = new mongoose.Schema({
     balance: { type: Number, default: 0, min: 0 },
     totalPurchased: { type: Number, default: 0, min: 0 },
     totalUsed: { type: Number, default: 0, min: 0 },
+    // Track free/awarded coins separate from purchased
+    lastAwardDate: Date,
+    awardHistory: [{
+      date: { type: Date, default: Date.now },
+      amount: { type: Number, required: true },
+      type: { type: String, enum: ['welcome', 'promo', 'manual'], default: 'manual' },
+      note: { type: String, default: '' }
+    }],
+    welcomeBonusGranted: { type: Boolean, default: false },
     purchaseHistory: [{
       date: { type: Date, default: Date.now },
       amount: { type: Number, required: true },
@@ -228,6 +237,37 @@ userSchema.methods.useCoins = function(amount, usageData = {}) {
 
 userSchema.methods.getCoinsBalance = function() {
   return this.coins.balance;
+};
+
+// Grant free coins (does not impact totalPurchased)
+userSchema.methods.grantFreeCoins = async function(amount, meta = {}) {
+  const amt = Math.max(0, parseInt(amount || 0, 10));
+  if (!amt) return false;
+  this.coins.balance = (this.coins.balance || 0) + amt;
+  this.coins.lastAwardDate = new Date();
+  // Record in award history
+  if (!Array.isArray(this.coins.awardHistory)) this.coins.awardHistory = [];
+  this.coins.awardHistory.push({
+    amount: amt,
+    type: meta.type || 'manual',
+    note: meta.note || ''
+  });
+  await this.save();
+  return true;
+};
+
+// Grant 5-coin welcome bonus exactly once
+userSchema.methods.grantWelcomeBonus = async function(amount = 5) {
+  try {
+    if (this.coins?.welcomeBonusGranted) return false;
+    const granted = await this.grantFreeCoins(amount, { type: 'welcome', note: 'Welcome bonus' });
+    this.coins.welcomeBonusGranted = true;
+    await this.save();
+    return granted;
+  } catch (e) {
+    console.warn('Failed to grant welcome bonus:', e.message || e);
+    return false;
+  }
 };
 
 // Sync credits with subscription
