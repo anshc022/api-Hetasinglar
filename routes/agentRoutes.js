@@ -218,6 +218,7 @@ router.use(async (req, res, next) => {
 // Get active escort profiles (with optional filtering & pagination) - OPTIMIZED
 router.get('/escorts/active', async (req, res) => {
   const requestId = 'temp-' + Math.random().toString(36).substr(2, 9); // performanceMonitor.generateRequestId();
+  const startTime = Date.now(); // simple local timer since performanceMonitor is disabled
   // const timer = // performanceMonitor.startTimer(requestId, 'escorts/active');
   
   try {
@@ -390,8 +391,9 @@ router.get('/escorts/active', async (req, res) => {
     const resultCount = Array.isArray(profiles) ? profiles.length : 0;
     // const perfResult = // performanceMonitor.endTimer(requestId, resultCount, cached);
     
-    // Add performance headers for monitoring
-    res.set('X-Response-Time', `${perfResult.totalDuration}ms`);
+  // Add performance headers for monitoring (fallback timer)
+  const totalDuration = Date.now() - startTime;
+  res.set('X-Response-Time', `${totalDuration}ms`);
     res.set('X-Result-Count', String(resultCount));
     res.set('X-Cache-Status', cached ? 'HIT' : 'MISS');
     
