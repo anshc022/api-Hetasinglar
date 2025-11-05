@@ -32,5 +32,7 @@ escortProfileSchema.index({ status: 1, createdAt: -1 });
 escortProfileSchema.index({ status: 1, gender: 1, createdAt: -1 });
 // 3) Active by country/region ordered by recency
 escortProfileSchema.index({ status: 1, country: 1, region: 1, createdAt: -1 });
+// 4) Active by country/region/gender ordered by recency (covers most selective filters)
+escortProfileSchema.index({ status: 1, country: 1, region: 1, gender: 1, createdAt: -1 });
 
 module.exports = mongoose.model('EscortProfile', escortProfileSchema);

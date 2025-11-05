@@ -222,8 +222,10 @@ router.get('/escorts/active', async (req, res) => {
   // const timer = // performanceMonitor.startTimer(requestId, 'escorts/active');
   
   try {
+    const MAX_PAGE_SIZE = 200;
     const page = parseInt(req.query.page, 10) || 0;
-    const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 0, 0);
+    const rawPageSize = parseInt(req.query.pageSize, 10);
+    const pageSize = Math.min(Math.max(rawPageSize || 0, 0), MAX_PAGE_SIZE);
     const withTotals = (req.query.withTotals || 'false').toLowerCase() === 'true';
     const format = (req.query.format || 'array').toLowerCase(); // 'array' (default) or 'v2'
     const gender = req.query.gender;
@@ -274,7 +276,7 @@ router.get('/escorts/active', async (req, res) => {
           // Optimized field selection based on actual frontend usage
           const essentialFields = '_id username firstName profileImage profilePicture imageUrl country region status createdAt';
           // UI-focused full selection - only fields actually used by frontend
-          const uiOptimizedFields = essentialFields + ' interests profession';
+          const uiOptimizedFields = essentialFields + ' interests profession description';
 
           let query = EscortProfile.find(filter)
             .select(useFull ? uiOptimizedFields : essentialFields)
