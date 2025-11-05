@@ -10,6 +10,7 @@ const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
 const crypto = require('crypto');
+const { performanceMonitor } = require('../utils/performanceMonitor');
 const { isValidSwedishRegion, getSwedishRegions, normalizeSwedishRegion } = require('../constants/swedishRegions');
 const { isValidRelationshipStatus, getRelationshipStatuses } = require('../constants/relationshipStatuses');
 // Inflight map to de-duplicate concurrent fetches per cacheKey
@@ -18,6 +19,38 @@ const inflightFetches = new Map();
 // Fallback cache for ultra-fast live queue
 const liveQueueCache = new Map();
 const cacheTimers = new Map();
+
+// Performance monitoring endpoint
+router.get('/performance-stats', async (req, res) => {
+  try {
+    const escortCount = await EscortProfile.countDocuments({ status: 'active' });
+    const perfStats = performanceMonitor.getStats();
+    
+    res.json({
+      status: 'monitoring',
+      timestamp: new Date().toISOString(),
+      escortCount,
+      performance: perfStats,
+      optimizations: {
+        fieldOptimization: 'UI-focused field selection',
+        resultLimiting: 'Smart limits (50 full, 100 basic)',
+        caching: 'Aggressive TTL (3-10 minutes)',
+        indexHints: 'Query-specific index hints',
+        performanceMonitoring: 'Real-time tracking'
+      },
+      cacheStats: {
+        activeRequests: inflightFetches.size,
+        liveQueueCacheSize: liveQueueCache.size
+      }
+    });
+  } catch (error) {
+    console.error('Performance stats error:', error);
+    res.status(500).json({
+      message: 'Failed to fetch performance stats',
+      error: error.message
+    });
+  }
+});
 
 // Expose a helper to clear fallback live queue cache immediately
 function clearLiveQueueFallbackCache() {
@@ -182,16 +215,31 @@ router.use(async (req, res, next) => {
   }
 });
 
-// Get active escort profiles (with optional filtering & pagination)
+// Get active escort profiles (with optional filtering & pagination) - OPTIMIZED
 router.get('/escorts/active', async (req, res) => {
+  const requestId = performanceMonitor.generateRequestId();
+  const timer = performanceMonitor.startTimer(requestId, 'escorts/active');
+  
   try {
-  const page = parseInt(req.query.page, 10) || 0;
-  const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 0, 0);
-  const withTotals = (req.query.withTotals || 'false').toLowerCase() === 'true';
-  const format = (req.query.format || 'array').toLowerCase(); // 'array' (default) or 'v2'
+    const page = parseInt(req.query.page, 10) || 0;
+    const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 0, 0);
+    const withTotals = (req.query.withTotals || 'false').toLowerCase() === 'true';
+    const format = (req.query.format || 'array').toLowerCase(); // 'array' (default) or 'v2'
     const gender = req.query.gender;
     const country = req.query.country;
     const region = req.query.region;
+    
+    performanceMonitor.recordPhase(requestId, 'init', {
+      full: req.query.full,
+      filters: {gender, country, region},
+      pagination: page > 0,
+      pageSize
+    });
+    
+    // Warn about potentially expensive full queries
+    if (req.query.full === 'true' && !page) {
+      console.warn(`[${requestId}] ⚠️ EXPENSIVE: Full query without pagination detected - consider adding pagination`);
+    }
 
     const filter = { status: 'active' };
     if (gender) filter.gender = gender;
@@ -209,47 +257,61 @@ router.get('/escorts/active', async (req, res) => {
     let profiles = cache.get(cacheKey);
     let hasMore = false;
     let totalsMeta = null;
-    const t0 = Date.now();
+    let cached = false;
+    
     if (!profiles) {
-      console.log(`Cache miss - fetching escorts from database for key ${cacheKey}`);
+      performanceMonitor.recordPhase(requestId, 'cache-miss', { cacheKey });
+      console.log(`[${requestId}] Cache miss - fetching escorts from database for key ${cacheKey}`);
 
       // De-duplicate concurrent fetches per cacheKey
       if (inflightFetches.has(cacheKey)) {
         profiles = await inflightFetches.get(cacheKey);
       } else {
         const fetchPromise = (async () => {
-          // Dynamic projection control: default (light) vs full profile fields
-          const baseFields = 'username firstName gender profileImage profilePicture imageUrl country region status createdAt';
-          const extendedFields = baseFields + ' relationshipStatus interests profession height dateOfBirth serialNumber description';
+          // Optimized field selection based on actual frontend usage
+          const essentialFields = '_id username firstName profileImage profilePicture imageUrl country region status createdAt';
+          // UI-focused full selection - only fields actually used by frontend
+          const uiOptimizedFields = essentialFields + ' interests profession';
           const useFull = (req.query.full === 'true');
 
           let query = EscortProfile.find(filter)
-            .select(useFull ? extendedFields : baseFields)
+            .select(useFull ? uiOptimizedFields : essentialFields)
             .sort({ createdAt: -1 })
             .lean();
 
           if (useFull) {
-            console.log('[escorts/active] Using FULL projection (includes description & extra fields)');
+            console.log('[escorts/active] Using UI-OPTIMIZED projection (only fields used by frontend)');
           } else {
-            console.log('[escorts/active] Using BASE projection. Pass ?full=true to include additional fields.');
+            console.log('[escorts/active] Using ESSENTIAL projection (core fields only)');
           }
 
-          // Apply index hints when possible to ensure index usage
+          // Optimized index hints for better query performance
           try {
+            // Primary compound index for most common queries
             if (gender && country && region) {
-              query = query.hint({ status: 1, country: 1, region: 1, createdAt: -1 });
+              query = query.hint({ status: 1, country: 1, region: 1, gender: 1, createdAt: -1 });
             } else if (country && region) {
               query = query.hint({ status: 1, country: 1, region: 1, createdAt: -1 });
             } else if (gender) {
               query = query.hint({ status: 1, gender: 1, createdAt: -1 });
+            } else if (country) {
+              query = query.hint({ status: 1, country: 1, createdAt: -1 });
             } else {
+              // Fallback to simple status + creation date index
               query = query.hint({ status: 1, createdAt: -1 });
             }
-          } catch {}
+          } catch (hintError) {
+            console.log('Index hint failed (non-fatal):', hintError.message);
+          }
 
           if (isPaginated) {
             // Use 1 extra doc to determine hasMore without total count
             query = query.skip((page - 1) * pageSize).limit(pageSize + 1);
+          } else {
+            // CRITICAL: Prevent massive data fetches - limit to 100 records max
+            const maxRecords = useFull ? 50 : 100; // Lower limit for full queries
+            query = query.limit(maxRecords);
+            console.log(`[escorts/active] Applied safety limit: ${maxRecords} records`);
           }
           const result = await query.exec();
           return result;
@@ -280,12 +342,29 @@ router.get('/escorts/active', async (req, res) => {
         }
       }
 
-      // Extend TTL to reduce DB load (5 minutes)
-      const ttl = 300 * 1000;
+      // Optimize TTL based on query complexity and data size
+      let ttl;
+      if (useFull || profiles.length > 30) {
+        // Longer cache for expensive full queries or large result sets
+        ttl = 600 * 1000; // 10 minutes
+      } else if (isPaginated) {
+        // Medium cache for paginated results
+        ttl = 300 * 1000; // 5 minutes
+      } else {
+        // Standard cache for simple queries
+        ttl = 180 * 1000; // 3 minutes
+      }
+      
       cache.set(cacheKey, profiles, ttl);
-      console.log(`Cached ${profiles.length} escort profiles for key ${cacheKey} (TTL ${ttl}ms) in ${Date.now() - t0}ms`);
+      performanceMonitor.recordPhase(requestId, 'db-complete', { 
+        resultCount: profiles.length,
+        ttl: ttl/1000
+      });
+      console.log(`[${requestId}] Cached ${profiles.length} escort profiles (TTL ${ttl/1000}s)`);
     } else {
-      console.log(`Cache hit - returning ${Array.isArray(profiles) ? profiles.length : 0} escort profiles for key ${cacheKey} (age <= TTL)`);
+      cached = true;
+      performanceMonitor.recordPhase(requestId, 'cache-hit', { cacheKey });
+      console.log(`[${requestId}] Cache hit - returning ${Array.isArray(profiles) ? profiles.length : 0} escort profiles`);
     }
     // Choose response shape (default array for backward compatibility)
     const responseBody = format === 'v2'
@@ -306,9 +385,20 @@ router.get('/escorts/active', async (req, res) => {
     if (req.headers['if-none-match'] === etag) {
       return res.status(304).end();
     }
+    
+    // Complete performance monitoring
+    const resultCount = Array.isArray(profiles) ? profiles.length : 0;
+    const perfResult = performanceMonitor.endTimer(requestId, resultCount, cached);
+    
+    // Add performance headers for monitoring
+    res.set('X-Response-Time', `${perfResult.totalDuration}ms`);
+    res.set('X-Result-Count', String(resultCount));
+    res.set('X-Cache-Status', cached ? 'HIT' : 'MISS');
+    
     res.json(responseBody);
   } catch (error) {
-    console.error('Error fetching escort profiles:', error);
+    performanceMonitor.endTimer(requestId, 0, false);
+    console.error(`[${requestId}] ❌ Query failed:`, error);
     res.status(500).json({
       message: 'Failed to fetch escort profiles',
       error: error.message
