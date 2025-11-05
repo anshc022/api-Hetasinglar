@@ -10,7 +10,7 @@ const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
 const crypto = require('crypto');
-const { performanceMonitor } = require('../utils/performanceMonitor');
+// const { performanceMonitor } = require('../utils/performanceMonitor'); // Temporarily disabled for deployment
 const { isValidSwedishRegion, getSwedishRegions, normalizeSwedishRegion } = require('../constants/swedishRegions');
 const { isValidRelationshipStatus, getRelationshipStatuses } = require('../constants/relationshipStatuses');
 // Inflight map to de-duplicate concurrent fetches per cacheKey
@@ -24,13 +24,13 @@ const cacheTimers = new Map();
 router.get('/performance-stats', async (req, res) => {
   try {
     const escortCount = await EscortProfile.countDocuments({ status: 'active' });
-    const perfStats = performanceMonitor.getStats();
+    // const perfStats = // performanceMonitor.getStats();
     
     res.json({
       status: 'monitoring',
       timestamp: new Date().toISOString(),
       escortCount,
-      performance: perfStats,
+      performance: { activeRequests: 0, slowQueryThreshold: 1000, warningThreshold: 500 }, // perfStats,
       optimizations: {
         fieldOptimization: 'UI-focused field selection',
         resultLimiting: 'Smart limits (50 full, 100 basic)',
@@ -217,8 +217,8 @@ router.use(async (req, res, next) => {
 
 // Get active escort profiles (with optional filtering & pagination) - OPTIMIZED
 router.get('/escorts/active', async (req, res) => {
-  const requestId = performanceMonitor.generateRequestId();
-  const timer = performanceMonitor.startTimer(requestId, 'escorts/active');
+  const requestId = 'temp-' + Math.random().toString(36).substr(2, 9); // performanceMonitor.generateRequestId();
+  // const timer = // performanceMonitor.startTimer(requestId, 'escorts/active');
   
   try {
     const page = parseInt(req.query.page, 10) || 0;
@@ -229,7 +229,7 @@ router.get('/escorts/active', async (req, res) => {
     const country = req.query.country;
     const region = req.query.region;
     
-    performanceMonitor.recordPhase(requestId, 'init', {
+    // performanceMonitor.recordPhase(requestId, 'init', {
       full: req.query.full,
       filters: {gender, country, region},
       pagination: page > 0,
@@ -260,7 +260,7 @@ router.get('/escorts/active', async (req, res) => {
     let cached = false;
     
     if (!profiles) {
-      performanceMonitor.recordPhase(requestId, 'cache-miss', { cacheKey });
+      // performanceMonitor.recordPhase(requestId, 'cache-miss', { cacheKey });
       console.log(`[${requestId}] Cache miss - fetching escorts from database for key ${cacheKey}`);
 
       // De-duplicate concurrent fetches per cacheKey
@@ -356,14 +356,14 @@ router.get('/escorts/active', async (req, res) => {
       }
       
       cache.set(cacheKey, profiles, ttl);
-      performanceMonitor.recordPhase(requestId, 'db-complete', { 
+      // performanceMonitor.recordPhase(requestId, 'db-complete', { 
         resultCount: profiles.length,
         ttl: ttl/1000
       });
       console.log(`[${requestId}] Cached ${profiles.length} escort profiles (TTL ${ttl/1000}s)`);
     } else {
       cached = true;
-      performanceMonitor.recordPhase(requestId, 'cache-hit', { cacheKey });
+      // performanceMonitor.recordPhase(requestId, 'cache-hit', { cacheKey });
       console.log(`[${requestId}] Cache hit - returning ${Array.isArray(profiles) ? profiles.length : 0} escort profiles`);
     }
     // Choose response shape (default array for backward compatibility)
@@ -388,7 +388,7 @@ router.get('/escorts/active', async (req, res) => {
     
     // Complete performance monitoring
     const resultCount = Array.isArray(profiles) ? profiles.length : 0;
-    const perfResult = performanceMonitor.endTimer(requestId, resultCount, cached);
+    // const perfResult = // performanceMonitor.endTimer(requestId, resultCount, cached);
     
     // Add performance headers for monitoring
     res.set('X-Response-Time', `${perfResult.totalDuration}ms`);
@@ -397,7 +397,7 @@ router.get('/escorts/active', async (req, res) => {
     
     res.json(responseBody);
   } catch (error) {
-    performanceMonitor.endTimer(requestId, 0, false);
+    // performanceMonitor.endTimer(requestId, 0, false);
     console.error(`[${requestId}] ❌ Query failed:`, error);
     res.status(500).json({
       message: 'Failed to fetch escort profiles',
