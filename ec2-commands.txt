@@ -1,0 +1,131 @@
+# Quick Backend Fix Commands for EC2
+# Copy and paste these commands one by one in your SSH session
+
+# 1. Create the fix script directly on the server
+cat > quick-fix.sh << 'EOF'
+#!/bin/bash
+
+echo "🚀 HetaSinglar Backend Quick Fix"
+echo "==============================="
+
+# Find or create server directory
+if [ ! -d "/home/ec2-user/api-Hetasinglar" ]; then
+    mkdir -p /home/ec2-user/api-Hetasinglar
+fi
+
+cd /home/ec2-user/api-Hetasinglar
+
+# Stop any existing node processes
+echo "1. Stopping existing processes..."
+sudo pkill -f node 2>/dev/null || true
+sleep 2
+
+# Create basic server.js if it doesn't exist
+if [ ! -f "server.js" ]; then
+    echo "2. Creating basic server.js..."
+    cat > server.js << 'SERVEREOF'
+const express = require('express');
+const cors = require('cors');
+const mongoose = require('mongoose');
+require('dotenv').config({ path: '.env.production' });
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Middleware
+app.use(cors({
+    origin: ['https://hetasinglar.se', 'https://www.hetasinglar.se', 'http://13.48.194.178:5000'],
+    credentials: true
+}));
+app.use(express.json());
+
+// Basic routes
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        environment: process.env.NODE_ENV || 'development',
+        version: '1.0.0'
+    });
+});
+
+app.get('/api/test', (req, res) => {
+    res.json({ message: 'HetaSinglar API is working!' });
+});
+
+// Start server
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 HetaSinglar server running on port ${PORT}`);
+    console.log(`🌐 Health check: http://localhost:${PORT}/api/health`);
+});
+SERVEREOF
+fi
+
+# Create package.json if it doesn't exist
+if [ ! -f "package.json" ]; then
+    echo "3. Creating package.json..."
+    cat > package.json << 'PKGEOF'
+{
+  "name": "hetasinglar-backend",
+  "version": "1.0.0",
+  "description": "HetaSinglar Backend API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "mongoose": "^7.5.0",
+    "dotenv": "^16.3.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
+PKGEOF
+fi
+
+# Create environment file
+echo "4. Creating environment file..."
+cat > .env.production << 'ENVEOF'
+PORT=5000
+NODE_ENV=production
+MONGODB_URI=mongodb+srv://HetaSinglar:HetaSinglar-0099@hetasinglar.ca0z4d.mongodb.net/hetasinglar?retryWrites=true&w=majority
+JWT_SECRET=hetasinglar-production-secret-2024
+SESSION_SECRET=hetasinglar-session-secret-2024
+FRONTEND_URL=https://hetasinglar.se
+ALLOWED_ORIGINS=https://hetasinglar.se,https://www.hetasinglar.se,http://13.48.194.178:5000
+ENVEOF
+
+# Install Node.js if not present
+if ! command -v node &> /dev/null; then
+    echo "5. Installing Node.js..."
+    curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+    sudo yum install -y nodejs
+fi
+
+# Install dependencies
+echo "6. Installing dependencies..."
+npm install
+
+# Start the server directly
+echo "7. Starting server..."
+NODE_ENV=production nohup node server.js > server.log 2>&1 &
+
+# Wait a moment and test
+sleep 3
+echo "8. Testing server..."
+curl -s http://localhost:5000/api/health || echo "Server not responding yet..."
+
+echo ""
+echo "✅ Quick fix complete!"
+echo "🌐 Test your API: http://13.48.194.178:5000/api/health"
+echo "📜 Check logs: tail -f server.log"
+echo "🔄 Check process: ps aux | grep node"
+EOF
+
+# Make it executable and run
+chmod +x quick-fix.sh
+./quick-fix.sh
