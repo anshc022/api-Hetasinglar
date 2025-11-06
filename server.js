@@ -29,6 +29,7 @@ const affiliateRoutes = require('./routes/affiliateRoutes');
 const logRoutes = require('./routes/logRoutes');
 const firstContactRoutes = require('./routes/firstContactRoutes');
 const likeRoutes = require('./routes/likeRoutes');
+
 const createDefaultAdmin = require('./initAdmin');
 const initializeCommissionSystem = require('./initCommissionSystem');
 const ActiveUsersService = require('./services/activeUsers');

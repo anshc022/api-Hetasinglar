@@ -1,15 +1,42 @@
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 
-// Email configuration using environment variables
+// Email configuration using environment variables (robust + secure defaults)
+const smtpHost = process.env.SMTP_HOST || 'mailcluster.loopia.se';
+const smtpPort = Number(process.env.SMTP_PORT) || 465;
+// If SMTP_SECURE is provided, respect it; otherwise infer from port (465 = implicit TLS)
+const smtpSecure = (typeof process.env.SMTP_SECURE === 'string')
+  ? process.env.SMTP_SECURE.toLowerCase() === 'true'
+  : smtpPort === 465;
+
+const emailUser = process.env.EMAIL_USER || 'contact@hetasinglar.se';
+const emailPass = process.env.EMAIL_PASS; // Do NOT fallback to any hardcoded password
+
+// Basic config validation (no secrets logged)
+if (!emailUser || !emailPass) {
+  console.error('Email configuration error: EMAIL_USER or EMAIL_PASS is missing.');
+}
+
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'mailcluster.loopia.se',
-  port: parseInt(process.env.SMTP_PORT) || 465,
-  secure: true, // Use SSL
+  host: smtpHost,
+  port: smtpPort,
+  secure: smtpSecure, // true for 465, false for other ports
   auth: {
-    user: process.env.EMAIL_USER || 'contact@hetasinglar.se',
-    pass: process.env.EMAIL_PASS || 'be3SnVqktRu9'
-  }
+    user: emailUser,
+    pass: emailPass
+  },
+  // Connection settings for better reliability
+  connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 15000,
+  greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 15000,
+  socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 20000,
+  // TLS settings
+  tls: {
+    minVersion: 'TLSv1.2',
+    servername: smtpHost
+  },
+  // Debug for troubleshooting
+  debug: process.env.SMTP_DEBUG?.toLowerCase?.() === 'true',
+  logger: process.env.SMTP_DEBUG?.toLowerCase?.() === 'true'
 });
 
 // Generate OTP
@@ -74,7 +101,12 @@ const sendOTPEmail = async (email, otp, username) => {
     console.log('OTP email sent successfully to:', email);
     return true;
   } catch (error) {
-    console.error('Error sending OTP email:', error);
+    console.error('Error sending OTP email:', {
+      code: error.code,
+      responseCode: error.responseCode,
+      command: error.command,
+      message: error.message
+    });
     return false;
   }
 };
@@ -138,7 +170,12 @@ const sendWelcomeEmail = async (email, username) => {
     console.log('Welcome email sent successfully to:', email);
     return true;
   } catch (error) {
-    console.error('Error sending welcome email:', error);
+    console.error('Error sending welcome email:', {
+      code: error.code,
+      responseCode: error.responseCode,
+      command: error.command,
+      message: error.message
+    });
     return false;
   }
 };
@@ -204,7 +241,12 @@ const sendPasswordResetEmail = async (email, resetToken, username) => {
     console.log('Password reset email sent successfully to:', email);
     return true;
   } catch (error) {
-    console.error('Error sending password reset email:', error);
+    console.error('Error sending password reset email:', {
+      code: error.code,
+      responseCode: error.responseCode,
+      command: error.command,
+      message: error.message
+    });
     return false;
   }
 };
@@ -216,7 +258,16 @@ const testEmailConnection = async () => {
     console.log('Email service is ready to send emails');
     return true;
   } catch (error) {
-    console.error('Email service configuration error:', error);
+    console.error('Email service configuration error:', {
+      code: error.code,
+      responseCode: error.responseCode,
+      command: error.command,
+      message: error.message,
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      authMethod: smtpAuthMethod
+    });
     return false;
   }
 };
@@ -274,7 +325,12 @@ module.exports = {
       console.log('Message notification email sent to:', toEmail);
       return true;
     } catch (error) {
-      console.error('Error sending message notification email:', error);
+      console.error('Error sending message notification email:', {
+        code: error.code,
+        responseCode: error.responseCode,
+        command: error.command,
+        message: error.message
+      });
       return false;
     }
   }
