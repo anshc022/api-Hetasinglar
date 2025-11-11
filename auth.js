@@ -325,34 +325,8 @@ router.post('/register', async (req, res) => {
     });
 
     if (userExists) {
-      // If user exists but email not verified, allow resending OTP
-      if (userExists.email === email && !userExists.emailVerified) {
-        const otp = emailService.generateOTP();
-        const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-        // Update user with new OTP
-        await User.findByIdAndUpdate(userExists._id, {
-          emailOTP: otp,
-          emailOTPExpires: otpExpires
-        });
-
-        // Send OTP email
-        const emailSent = await emailService.sendOTPEmail(email, otp, username);
-        if (!emailSent) {
-          return res.status(500).json({ message: 'Failed to send verification email' });
-        }
-
-        return res.status(200).json({
-          message: 'New verification code sent to your email',
-          userId: userExists._id,
-          requiresVerification: true
-        });
-      }
-
       return res.status(400).json({
-        message: userExists.email === email ? 
-          'Email already registered' : 
-          'Username already taken'
+        message: userExists.email === email ? 'Email already registered' : 'Username already taken'
       });
     }
 
@@ -382,18 +356,14 @@ router.post('/register', async (req, res) => {
       }
     }
 
-    // Generate OTP
-    const otp = emailService.generateOTP();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-    // Create user data with OTP (but not verified yet)
+    // Create user data without OTP and mark as verified immediately
     const userData = {
       username,
       email,
       password,
-      emailVerified: false,
-      emailOTP: otp,
-      emailOTPExpires: otpExpires,
+      emailVerified: true,
+      emailOTP: undefined,
+      emailOTPExpires: undefined,
       ...affiliateData
     };
 
@@ -402,21 +372,42 @@ router.post('/register', async (req, res) => {
     if (dateOfBirth) userData.dateOfBirth = dateOfBirth;
     if (sex) userData.sex = sex;
 
-    // Create user (but not verified)
+    // Create user (verified)
     const user = await User.create(userData);
 
-    // Send OTP email
-    const emailSent = await emailService.sendOTPEmail(email, otp, username);
-    if (!emailSent) {
-      // If email fails, delete the created user
-      await User.findByIdAndDelete(user._id);
-      return res.status(500).json({ message: 'Failed to send verification email' });
+    // Grant welcome bonus once
+    try {
+      await user.grantWelcomeBonus(5);
+    } catch (e) {
+      console.warn('Welcome bonus grant failed:', e?.message || e);
     }
 
+    // Optionally send a welcome email (non-blocking)
+    try { emailService.sendWelcomeEmail(user.email, user.username); } catch {}
+
+    // Generate JWT token for immediate login
+    const token = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '7d' }
+    );
+
+    const userResponse = {
+      _id: user._id,
+      username: user.username,
+      email: user.email,
+      full_name: user.full_name,
+      dateOfBirth: user.dateOfBirth,
+      sex: user.sex,
+      emailVerified: true,
+      coins: { balance: user.coins?.balance || 0 }
+    };
+
     res.status(201).json({
-      message: 'Registration initiated. Please check your email for verification code.',
-      userId: user._id,
-      requiresVerification: true
+      message: 'Registration successful. Welcome bonus granted (5 coins).',
+      user: userResponse,
+      access_token: token,
+      welcomeBonus: 5
     });
 
   } catch (error) {
@@ -429,127 +420,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// Verify OTP route
-router.post('/verify-otp', async (req, res) => {
-  try {
-    const { userId, otp } = req.body;
-
-    if (!userId || !otp) {
-      return res.status(400).json({ message: 'User ID and OTP are required' });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Check if already verified
-    if (user.emailVerified) {
-      return res.status(400).json({ message: 'Email already verified' });
-    }
-
-    // Check OTP expiry
-    if (!user.emailOTPExpires || user.emailOTPExpires < new Date()) {
-      return res.status(400).json({ message: 'OTP has expired' });
-    }
-
-    // Verify OTP
-    if (user.emailOTP !== otp) {
-      return res.status(400).json({ message: 'Invalid OTP' });
-    }
-
-    // Mark email as verified and clear OTP
-    await User.findByIdAndUpdate(userId, {
-      emailVerified: true,
-      emailOTP: undefined,
-      emailOTPExpires: undefined,
-      status: 'active'
-    });
-
-    // Reload user to apply post-verify actions
-    const verifiedUser = await User.findById(userId);
-
-    // Grant 5 free welcome coins exactly once
-    try {
-      await verifiedUser.grantWelcomeBonus(5);
-    } catch (e) {
-      console.warn('Welcome bonus grant failed:', e?.message || e);
-    }
-
-    // Send welcome email
-    await emailService.sendWelcomeEmail(verifiedUser.email, verifiedUser.username);
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '24h' }
-    );
-
-    const userResponse = {
-      _id: verifiedUser._id,
-      username: verifiedUser.username,
-      email: verifiedUser.email,
-      full_name: verifiedUser.full_name,
-      dateOfBirth: verifiedUser.dateOfBirth,
-      sex: verifiedUser.sex,
-      emailVerified: true,
-      coins: { balance: verifiedUser.coins?.balance || 0 }
-    };
-
-    res.status(200).json({ 
-      message: 'Email verified successfully',
-      user: userResponse,
-      token 
-    });
-
-  } catch (error) {
-    console.error('OTP verification error:', error);
-    res.status(500).json({ message: 'Verification failed' });
-  }
-});
-
-// Resend OTP route
-router.post('/resend-otp', async (req, res) => {
-  try {
-    const { userId } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ message: 'User ID is required' });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    if (user.emailVerified) {
-      return res.status(400).json({ message: 'Email already verified' });
-    }
-
-    // Generate new OTP
-    const otp = emailService.generateOTP();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-
-    // Update user with new OTP
-    await User.findByIdAndUpdate(userId, {
-      emailOTP: otp,
-      emailOTPExpires: otpExpires
-    });
-
-    // Send OTP email
-    const emailSent = await emailService.sendOTPEmail(user.email, otp, user.username);
-    if (!emailSent) {
-      return res.status(500).json({ message: 'Failed to send verification email' });
-    }
-
-    res.status(200).json({ message: 'New verification code sent to your email' });
-
-  } catch (error) {
-    console.error('Resend OTP error:', error);
-    res.status(500).json({ message: 'Failed to resend OTP' });
-  }
-});
+// OTP verification flow removed
 
 router.post('/login', async (req, res) => {
   try {
@@ -566,14 +437,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    // Check if email is verified
-    if (!user.emailVerified) {
-      return res.status(403).json({ 
-        message: 'Please verify your email before logging in',
-        requiresVerification: true,
-        userId: user._id
-      });
-    }
+    // Email verification no longer required (removed OTP flow)
 
     const token = jwt.sign(
       { userId: user._id },
@@ -589,7 +453,7 @@ router.post('/login', async (req, res) => {
         email: user.email,
         dateOfBirth: user.dateOfBirth,
         sex: user.sex,
-        emailVerified: user.emailVerified
+        emailVerified: true
       }
     });
   } catch (error) {
