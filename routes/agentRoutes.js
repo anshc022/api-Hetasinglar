@@ -1344,6 +1344,27 @@ router.post('/chats/:chatId/assign', agentAuth, async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
+    try {
+      clearLiveQueueFallbackCache();
+      if (cache && typeof cache.delete === 'function') {
+        cache.delete('live_queue:global');
+        cache.delete('live_queue:global:v2');
+        cache.delete('live_queue:global:v3');
+        cache.delete('live_queue_updates:all');
+      }
+      if (cache && cache.cache && typeof cache.cache.keys === 'function') {
+        const keysToRemove = [];
+        for (const key of cache.cache.keys()) {
+          if (typeof key === 'string' && key.startsWith('live_queue:')) {
+            keysToRemove.push(key);
+          }
+        }
+        keysToRemove.forEach(k => cache.delete(k));
+      }
+    } catch (cacheError) {
+      console.warn('Live queue cache clear (assignment) warning:', cacheError?.message || cacheError);
+    }
+
     res.json({
       success: true,
       message: 'Agent assigned to chat successfully',
@@ -1370,7 +1391,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
   
   try {
     // Use global cache key with version for optimized endpoint
-    const cacheKey = `live_queue:global:v2`;
+  const cacheKey = `live_queue:global:v3`;
     
     // Check fallback cache first - reduced TTL for fresher data
     if (liveQueueCache.has(cacheKey)) {
@@ -1477,12 +1498,53 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 6: Final projection - essential data only
+        // Stage 6: Lookup assigned agent details
+        $lookup: {
+          from: 'agents',
+          localField: 'agentId',
+          foreignField: '_id',
+          as: 'assignedAgentDetails',
+          pipeline: [
+            {
+              $project: {
+                name: 1,
+                agentId: 1
+              }
+            }
+          ]
+        }
+      },
+      {
+        // Stage 7: Build assigned agent structure
+        $addFields: {
+          assignedAgent: {
+            $let: {
+              vars: {
+                agentDoc: { $arrayElemAt: ['$assignedAgentDetails', 0] }
+              },
+              in: {
+                $cond: [
+                  { $ne: ['$agentId', null] },
+                  {
+                    _id: '$agentId',
+                    name: { $ifNull: ['$$agentDoc.name', 'Unknown Agent'] },
+                    agentId: { $ifNull: ['$$agentDoc.agentId', 'Unknown'] }
+                  },
+                  null
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        // Stage 8: Final projection - essential data only
         $project: {
           _id: 1,
           customerId: { $arrayElemAt: ['$customer', 0] },
           escortId: { $arrayElemAt: ['$escort', 0] },
           agentId: 1,
+          assignedAgent: 1,
           status: 1,
           customerName: 1,
           isInPanicRoom: 1,
@@ -1502,7 +1564,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
             message: {
               $cond: [
                 { $eq: ['$lastMessage.messageType', 'image'] },
-                '📷 Image',
+                '\ud83d\udcf7 Image',
                 { $substr: [{ $ifNull: ['$lastMessage.message', ''] }, 0, 50] }
               ]
             },
@@ -1515,11 +1577,11 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 7: Efficient sort
+        // Stage 9: Efficient sort
         $sort: { priority: -1, updatedAt: -1 }
       },
       {
-        // Stage 8: Performance limit
+        // Stage 10: Performance limit
         $limit: 25
       }
     ]);
@@ -1587,7 +1649,7 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
     }
 
     // Check cache first
-    const cacheKey = `live_queue:${escortId}:${agentId}`;
+  const cacheKey = `live_queue:${escortId}:${agentId}:v2`;
     const cached = cache.get(cacheKey);
     if (cached) {
       console.log(`🚀 Cache HIT: escort live-queue ${escortId} (${Date.now() - startTime}ms)`);
@@ -1650,7 +1712,8 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
           pipeline: [
             { 
               $project: { 
-                name: 1
+                name: 1,
+                agentId: 1
               } 
             }
           ]
@@ -1695,6 +1758,17 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
           customerId: '$customerId',
           escortId: { $literal: escort },
           agentId: '$agentDetails',
+          assignedAgent: {
+            $cond: [
+              { $ne: ['$agentId', null] },
+              {
+                _id: '$agentId',
+                name: { $ifNull: ['$agentDetails.name', 'Unknown Agent'] },
+                agentId: { $ifNull: ['$agentDetails.agentId', 'Unknown'] }
+              },
+              null
+            ]
+          },
           status: 1,
           messages: 1,
           customerName: 1,
@@ -1804,7 +1878,18 @@ router.post('/chats/:chatId/panic-room', agentAuth, async (req, res) => {
       clearLiveQueueFallbackCache();
       if (cache && typeof cache.delete === 'function') {
         cache.delete('live_queue:global');
+        cache.delete('live_queue:global:v2');
+        cache.delete('live_queue:global:v3');
         cache.delete('live_queue_updates:all');
+      }
+      if (cache && cache.cache && typeof cache.cache.keys === 'function') {
+        const keysToRemove = [];
+        for (const key of cache.cache.keys()) {
+          if (typeof key === 'string' && key.startsWith('live_queue:')) {
+            keysToRemove.push(key);
+          }
+        }
+        keysToRemove.forEach(k => cache.delete(k));
       }
     } catch (e) {
       console.warn('Live queue cache clear (panic move) warning:', e?.message || e);
@@ -1860,7 +1945,18 @@ router.post('/chats/:chatId/remove-panic-room', agentAuth, async (req, res) => {
       clearLiveQueueFallbackCache();
       if (cache && typeof cache.delete === 'function') {
         cache.delete('live_queue:global');
+        cache.delete('live_queue:global:v2');
+        cache.delete('live_queue:global:v3');
         cache.delete('live_queue_updates:all');
+      }
+      if (cache && cache.cache && typeof cache.cache.keys === 'function') {
+        const keysToRemove = [];
+        for (const key of cache.cache.keys()) {
+          if (typeof key === 'string' && key.startsWith('live_queue:')) {
+            keysToRemove.push(key);
+          }
+        }
+        keysToRemove.forEach(k => cache.delete(k));
       }
     } catch (e) {
       console.warn('Live queue cache clear (panic remove) warning:', e?.message || e);

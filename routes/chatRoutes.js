@@ -618,8 +618,9 @@ router.get('/user', async (req, res) => {
           };
         }
         
-        // Optimized message processing
-        const processedMessages = chat.messages.map(msg => ({
+        // Optimized message processing (exclude deleted messages for customers)
+        const visibleMessages = (chat.messages || []).filter(msg => msg.isDeleted !== true);
+        const processedMessages = visibleMessages.map(msg => ({
           text: msg.message,
           time: new Date(msg.timestamp).toLocaleString(),
           isSent: msg.sender === 'customer',
@@ -632,13 +633,14 @@ router.get('/user', async (req, res) => {
           readByAgent: msg.readByAgent,
           readByCustomer: msg.readByCustomer
         }));
+        const lastVisibleMessage = visibleMessages[visibleMessages.length - 1] || null;
         
         acc[escortIdStr].chats.push({
           id: chat._id,
           messages: processedMessages,
           isOnline: true,
-          lastMessage: chat.messages[chat.messages.length - 1]?.message || '',
-          time: new Date(chat.updatedAt).toLocaleString()
+          lastMessage: lastVisibleMessage ? lastVisibleMessage.message : '',
+          time: lastVisibleMessage ? new Date(lastVisibleMessage.timestamp).toLocaleString() : new Date(chat.updatedAt).toLocaleString()
         });
 
         return acc;
@@ -681,11 +683,12 @@ router.get('/user/escort/:escortId', async (req, res) => {
       return res.status(404).json({ message: 'No chat found with this escort' });
     }
 
+    const visibleMessages = (chat.messages || []).filter(msg => msg.isDeleted !== true);
     const formattedChat = {
       id: chat._id,
       sender: chat.escortId?.firstName || 'Escort',
       profileImage: chat.escortId?.profileImage,
-      messages: chat.messages.map(msg => ({
+      messages: visibleMessages.map(msg => ({
         text: msg.message,
         time: new Date(msg.timestamp).toLocaleString(),
         isSent: msg.sender === 'customer',
@@ -699,8 +702,8 @@ router.get('/user/escort/:escortId', async (req, res) => {
         readByCustomer: msg.readByCustomer
       })),
       isOnline: true,
-      lastMessage: chat.messages[chat.messages.length - 1]?.message || '',
-      time: new Date(chat.updatedAt).toLocaleString()
+      lastMessage: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].message : '',
+      time: visibleMessages.length ? new Date(visibleMessages[visibleMessages.length - 1].timestamp).toLocaleString() : new Date(chat.updatedAt).toLocaleString()
     };
 
     res.json(formattedChat);
@@ -2312,6 +2315,14 @@ router.delete('/:chatId/message/:messageIdOrIndex', auth, async (req, res) => {
       deletedMessageIndex: messageIndex,
       sender: messageToDelete.sender
     });
+
+    try {
+      if (cache && typeof cache.delete === 'function' && req.user?.id) {
+        cache.delete(`user:chats:${req.user.id}`);
+      }
+    } catch (cacheError) {
+      console.warn('User chat cache clear (delete message) warning:', cacheError?.message || cacheError);
+    }
     
   } catch (error) {
     console.error('Error deleting message:', error);
