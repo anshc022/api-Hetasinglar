@@ -9,6 +9,8 @@ const Chat = require('../models/Chat');
 const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
+const chatModeratorsService = require('../services/chatModerators');
+const ActiveUsersService = require('../services/activeUsers');
 const crypto = require('crypto');
 // const { performanceMonitor } = require('../utils/performanceMonitor'); // Temporarily disabled for deployment
 const { isValidSwedishRegion, getSwedishRegions, normalizeSwedishRegion } = require('../constants/swedishRegions');
@@ -19,6 +21,75 @@ const inflightFetches = new Map();
 // Fallback cache for ultra-fast live queue
 const liveQueueCache = new Map();
 const cacheTimers = new Map();
+
+const toDateOrNull = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const attachModerators = (chats) => {
+  if (!Array.isArray(chats)) {
+    return [];
+  }
+
+  const activeUsersMap = ActiveUsersService && typeof ActiveUsersService.getActiveUsers === 'function'
+    ? ActiveUsersService.getActiveUsers()
+    : null;
+  const hasActiveUsersMap = !!(activeUsersMap && typeof activeUsersMap.has === 'function');
+
+  return chats.map((chat) => {
+    const chatId = chat?._id && chat._id.toString ? chat._id.toString() : chat?._id;
+    const moderators = chatModeratorsService.getModerators(chatId);
+
+    const customerInfo = chat?.customerId;
+    let customerIdValue = customerInfo;
+
+    if (customerInfo && typeof customerInfo === 'object') {
+      customerIdValue = customerInfo._id || customerInfo.id || customerInfo.userId || null;
+    }
+
+    const normalizedCustomerId = customerIdValue && typeof customerIdValue.toString === 'function'
+      ? customerIdValue.toString()
+      : customerIdValue || null;
+
+    const isUserActive = hasActiveUsersMap && normalizedCustomerId
+      ? activeUsersMap.has(normalizedCustomerId)
+      : Boolean(chat?.isUserActive);
+
+    const activeEntry = hasActiveUsersMap && normalizedCustomerId
+      ? activeUsersMap.get(normalizedCustomerId)
+      : null;
+
+    const fallbackLastActive =
+      toDateOrNull(chat?.lastActive) ||
+      toDateOrNull(customerInfo && customerInfo.lastActiveDate) ||
+      toDateOrNull(chat?.lastMessage && chat.lastMessage.timestamp) ||
+      toDateOrNull(chat?.updatedAt) ||
+      toDateOrNull(chat?.createdAt);
+
+    const lastActive = toDateOrNull(activeEntry) || fallbackLastActive;
+
+    let enrichedCustomer = customerInfo;
+    if (customerInfo && typeof customerInfo === 'object') {
+      enrichedCustomer = {
+        ...customerInfo,
+        lastActiveDate: customerInfo.lastActiveDate || lastActive || undefined
+      };
+    }
+
+    return {
+      ...chat,
+      moderators,
+      isUserActive,
+      lastActive,
+      customerId: enrichedCustomer
+    };
+  });
+};
 
 // Performance monitoring endpoint
 router.get('/performance-stats', async (req, res) => {
@@ -1397,14 +1468,14 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     if (liveQueueCache.has(cacheKey)) {
       const cachedData = liveQueueCache.get(cacheKey);
       console.log(`🚀 OPTIMIZED Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
-      return res.json(cachedData);
+      return res.json(attachModerators(cachedData));
     }
     
     // Check main cache as backup
     const cached = cache.get && cache.get(cacheKey);
     if (cached) {
       console.log(`🚀 Main Cache HIT: optimized live-queue (${Date.now() - startTime}ms)`);
-      return res.json(cached);
+      return res.json(attachModerators(cached));
     }
     
     console.log(`🔍 Cache MISS: generating optimized live-queue data`);
@@ -1485,7 +1556,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           localField: 'customerId', 
           foreignField: '_id',
           as: 'customer',
-          pipeline: [{ $project: { username: 1, _id: 1 } }]
+          pipeline: [{ $project: { username: 1, _id: 1, lastActiveDate: 1 } }]
         }
       },
       {
@@ -1550,6 +1621,13 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           isInPanicRoom: 1,
           createdAt: 1,
           updatedAt: 1,
+          lastActive: {
+            $max: [
+              '$updatedAt',
+              { $ifNull: ['$lastMessage.timestamp', '$updatedAt'] },
+              { $ifNull: [{ $arrayElemAt: ['$customer.lastActiveDate', 0] }, '$updatedAt'] }
+            ]
+          },
           unreadCount: 1,
           priority: 1,
           reminderActive: 1,
@@ -1621,8 +1699,9 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       console.log(`⚡ FAST: optimized live-queue took ${responseTime}ms`);
     }
     
-    console.log(`🚀 OPTIMIZED Global live queue: ${chats.length} chats in ${responseTime}ms`);
-    res.json(chats);
+  const enrichedChats = attachModerators(chats);
+  console.log(`🚀 OPTIMIZED Global live queue: ${chats.length} chats in ${responseTime}ms`);
+  res.json(enrichedChats);
     
   } catch (error) {
     console.error('Error in optimized live queue:', error);
@@ -1653,7 +1732,10 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
     const cached = cache.get(cacheKey);
     if (cached) {
       console.log(`🚀 Cache HIT: escort live-queue ${escortId} (${Date.now() - startTime}ms)`);
-      return res.json(cached);
+      return res.json({
+        ...cached,
+        data: attachModerators(cached.data)
+      });
     }
     
     // First verify that the escort belongs to this agent (cached query)
@@ -1782,6 +1864,14 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
           createdAt: 1,
           updatedAt: 1,
           unreadCount: 1,
+          lastActive: {
+            $max: [
+              '$updatedAt',
+              { $ifNull: ['$lastMessage.timestamp', '$updatedAt'] },
+              { $ifNull: ['$lastCustomerResponse', '$updatedAt'] },
+              { $ifNull: ['$lastAgentResponse', '$updatedAt'] }
+            ]
+          },
           isUserActive: { $literal: false }
         }
       },
@@ -1800,7 +1890,7 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
       }
     ]);
 
-    const response = {
+    const rawResponse = {
       success: true,
       data: chats,
       escortProfile: {
@@ -1812,14 +1902,19 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
     };
 
   // Cache the results for 30 seconds
-  cache.set(cacheKey, response, 30 * 1000);
+  cache.set(cacheKey, rawResponse, 30 * 1000);
     
     const responseTime = Date.now() - startTime;
     if (responseTime > 500) {
       console.log(`⚠️ Slow escort live-queue: ${responseTime}ms`);
     }
 
-    res.json(response);
+    const enrichedResponse = {
+      ...rawResponse,
+      data: attachModerators(chats)
+    };
+
+    res.json(enrichedResponse);
   } catch (error) {
     console.error('Error fetching escort chats:', error);
     res.status(500).json({ 

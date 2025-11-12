@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const User = require('./models/User');
 const emailService = require('./services/emailService');
+const { formatUserProfile } = require('./utils/userResponseFormatter');
 
 // Auth Middleware
 const auth = async (req, res, next) => {
@@ -392,16 +393,7 @@ router.post('/register', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    const userResponse = {
-      _id: user._id,
-      username: user.username,
-      email: user.email,
-      full_name: user.full_name,
-      dateOfBirth: user.dateOfBirth,
-      sex: user.sex,
-      emailVerified: true,
-      coins: { balance: user.coins?.balance || 0 }
-    };
+    const userResponse = formatUserProfile(user);
 
     res.status(201).json({
       message: 'Registration successful. Welcome bonus granted (5 coins).',
@@ -447,14 +439,7 @@ router.post('/login', async (req, res) => {
 
     res.json({
       access_token: token,
-      user: {
-        _id: user._id,
-        username: user.username,
-        email: user.email,
-        dateOfBirth: user.dateOfBirth,
-        sex: user.sex,
-        emailVerified: true
-      }
+      user: formatUserProfile(user)
     });
   } catch (error) {
     console.error('Login error:', error);

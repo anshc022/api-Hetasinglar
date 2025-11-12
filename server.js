@@ -29,6 +29,7 @@ const affiliateRoutes = require('./routes/affiliateRoutes');
 const logRoutes = require('./routes/logRoutes');
 const firstContactRoutes = require('./routes/firstContactRoutes');
 const likeRoutes = require('./routes/likeRoutes');
+const userRoutes = require('./routes/userRoutes');
 
 const createDefaultAdmin = require('./initAdmin');
 const initializeCommissionSystem = require('./initCommissionSystem');
@@ -37,6 +38,7 @@ const Chat = require('./models/Chat');
 const Agent = require('./models/Agent');
 const Subscription = require('./models/Subscription');
 const EscortProfile = require('./models/EscortProfile');
+const chatModeratorsService = require('./services/chatModerators');
 // Reminder system constants
 const REMINDER_CHECK_INTERVAL_MS = 60 * 1000; // run every 1 minute
 const DEFAULT_REMINDER_INTERVAL_HOURS = 4; // 4 hours inactivity
@@ -64,6 +66,30 @@ const wss = new WebSocket.Server({
 
 // Make WebSocket server accessible to routes
 app.locals.wss = wss;
+
+function broadcastModeratorUpdate(chatId) {
+  if (!chatId) {
+    return;
+  }
+
+  const normalizedChatId = typeof chatId === 'string' ? chatId : chatId.toString();
+  const moderators = chatModeratorsService.getModerators(normalizedChatId);
+  const payload = JSON.stringify({
+    type: 'chat_moderator_update',
+    chatId: normalizedChatId,
+    moderators
+  });
+
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN && client.clientInfo?.role === 'agent') {
+      try {
+        client.send(payload);
+      } catch (err) {
+        console.warn('Moderator broadcast failed:', err?.message || err);
+      }
+    }
+  });
+}
 
 // CORS middleware for credentialed requests - must use specific origin, not wildcard
 app.use((req, res, next) => {
@@ -111,6 +137,9 @@ app.use(express.urlencoded({
   parameterLimit: 1000 // Limit parameters for security and performance
 }));
 
+// Public asset serving (profile images, chat uploads, etc.)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Add response time header for monitoring (fixed version)
 app.use((req, res, next) => {
   const start = Date.now();
@@ -142,6 +171,7 @@ app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/logs', logRoutes); // Add logs API routes
 app.use('/api/first-contact', firstContactRoutes); // Add first contact API routes
 app.use('/api/likes', likeRoutes); // Add likes API routes
+app.use('/api/users', userRoutes);
 
 // Expose helper to clear fallback live queue cache
 if (typeof agentRoutes.clearLiveQueueFallbackCache === 'function') {
@@ -370,6 +400,7 @@ mongoose.connect(process.env.MONGODB_URI, {
 
 // WebSocket connection handling
 wss.on('connection', (ws) => {
+  ws.connectionId = `conn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
@@ -377,7 +408,10 @@ wss.on('connection', (ws) => {
   ws.clientInfo = {
     chatId: null,
     role: null,
-    userId: null
+    userId: null,
+    agentDbId: null,
+    agentCode: null,
+    agentName: null
   };
 
   // Check for overdue responses periodically
@@ -423,25 +457,50 @@ wss.on('connection', (ws) => {
       
       // Handle client info updates
       if (data.type === 'client_info') {
+        const previousChatId = ws.clientInfo?.chatId || null;
+        const previousRole = ws.clientInfo?.role || null;
+
         ws.clientInfo = {
-          chatId: data.chatId,
-          role: data.role,
-          userId: data.userId
+          ...ws.clientInfo,
+          chatId: data.chatId || null,
+          role: data.role || previousRole || null,
+          userId: data.userId || ws.clientInfo?.userId || null,
+          agentDbId: data.agentId || ws.clientInfo?.agentDbId || null,
+          agentCode: data.agentCode || ws.clientInfo?.agentCode || null,
+          agentName: data.agentName || ws.clientInfo?.agentName || null
         };
-        
-        // Set user as active when they connect
-  if (data.userId && data.role !== 'agent') {
-          ActiveUsersService.setUserActive(data.userId);
-          
-          // Broadcast user online status to agents
+
+        if (ws.clientInfo.role === 'agent') {
+          if (ws.clientInfo.chatId) {
+            chatModeratorsService.setModeratorForConnection(
+              ws.connectionId,
+              ws.clientInfo.chatId,
+              {
+                agentId: ws.clientInfo.agentDbId || ws.clientInfo.userId,
+                agentCode: ws.clientInfo.agentCode,
+                name: ws.clientInfo.agentName || 'Agent'
+              }
+            );
+            broadcastModeratorUpdate(ws.clientInfo.chatId);
+            if (previousChatId && previousChatId !== ws.clientInfo.chatId) {
+              broadcastModeratorUpdate(previousChatId);
+            }
+          } else if (previousChatId) {
+            chatModeratorsService.removeModeratorByConnection(ws.connectionId);
+            broadcastModeratorUpdate(previousChatId);
+          } else {
+            chatModeratorsService.removeModeratorByConnection(ws.connectionId);
+          }
+        } else if (ws.clientInfo.userId) {
+          ActiveUsersService.setUserActive(ws.clientInfo.userId);
+
           const presenceUpdate = {
             type: 'user_presence',
-            userId: data.userId,
+            userId: ws.clientInfo.userId,
             status: 'online',
             timestamp: new Date().toISOString()
           };
-          
-          // Send to all agent clients
+
           wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN && client.clientInfo?.role === 'agent') {
               client.send(JSON.stringify(presenceUpdate));
@@ -696,20 +755,25 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (ws.clientInfo?.userId) {
-      if (ws.clientInfo?.userId && ws.clientInfo?.role !== 'agent') {
-        ActiveUsersService.removeUser(ws.clientInfo.userId);
+    if (ws.clientInfo?.role === 'agent') {
+      const lastChatId = ws.clientInfo?.chatId;
+      chatModeratorsService.removeModeratorByConnection(ws.connectionId);
+      if (lastChatId) {
+        broadcastModeratorUpdate(lastChatId);
       }
-      
-      // Broadcast user offline status to agents
-      if (ws.clientInfo.userId !== 'agent') {
+    }
+
+    if (ws.clientInfo?.userId) {
+      if (ws.clientInfo?.role !== 'agent') {
+        ActiveUsersService.removeUser(ws.clientInfo.userId);
+
         const presenceUpdate = {
           type: 'user_presence',
           userId: ws.clientInfo.userId,
           status: 'offline',
           timestamp: new Date().toISOString()
         };
-        
+
         wss.clients.forEach((client) => {
           if (client.readyState === WebSocket.OPEN && client.clientInfo?.role === 'agent') {
             client.send(JSON.stringify(presenceUpdate));
