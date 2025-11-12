@@ -207,6 +207,50 @@ router.get('/available-escorts', agentAuth, async (req, res) => {
   }
 });
 
+// Check if a customer already has an existing chat with an escort
+router.get('/check-existing', agentAuth, async (req, res) => {
+  try {
+    const { customerId, escortId } = req.query;
+
+    if (!customerId || !escortId) {
+      return res.status(400).json({ message: 'Customer ID and Escort ID are required' });
+    }
+
+    const escort = await EscortProfile.findOne({
+      _id: escortId,
+      agentId: req.agent._id,
+      isActive: true
+    }).select('_id agentId');
+
+    if (!escort) {
+      return res.status(404).json({ message: 'Escort not found or not accessible' });
+    }
+
+    const existingChat = await Chat.findOne({ customerId, escortId })
+      .sort({ updatedAt: -1 })
+      .populate('customerId', 'username email createdAt')
+      .populate('escortId', 'firstName lastName stageName profileImage')
+      .populate('agentId', 'name agentId');
+
+    if (!existingChat) {
+      return res.status(404).json({ exists: false });
+    }
+
+    res.json({
+      exists: true,
+      chat: existingChat,
+      status: existingChat.status,
+      isClosed: existingChat.status === 'closed',
+      lastInteractionAt: existingChat.messages?.length
+        ? existingChat.messages[existingChat.messages.length - 1].timestamp
+        : existingChat.updatedAt
+    });
+  } catch (error) {
+    console.error('Error checking existing contact:', error);
+    res.status(500).json({ message: 'Failed to check existing contact' });
+  }
+});
+
 // Create first contact - assign customer to escort
 router.post('/create-contact', agentAuth, async (req, res) => {
   try {
@@ -234,17 +278,89 @@ router.post('/create-contact', agentAuth, async (req, res) => {
       return res.status(404).json({ message: 'Escort not found or not accessible' });
     }
     
-    // Check if customer already has an active chat with this escort
-    const existingChat = await Chat.findOne({
-      customerId,
-      escortId,
-      status: { $in: ['assigned', 'active'] }
-    });
-    
+    // Check if customer already has a chat with this escort
+    const existingChat = await Chat.findOne({ customerId, escortId }).sort({ updatedAt: -1 });
+
     if (existingChat) {
-      return res.status(400).json({ 
-        message: 'Customer already has an active chat with this escort',
-        chatId: existingChat._id
+      const now = new Date();
+      const previousStatus = existingChat.status || 'unknown';
+      const shouldReopen = ['closed', 'pushed', 'new'].includes(existingChat.status);
+      const hadMessages = Array.isArray(existingChat.messages) && existingChat.messages.length > 0;
+
+      existingChat.agentId = req.agent._id;
+      existingChat.status = 'assigned';
+      existingChat.domain = domain || existingChat.domain || escort.domain;
+      existingChat.updatedAt = now;
+
+      if (shouldReopen) {
+        const reopenMessage = {
+          _id: new mongoose.Types.ObjectId(),
+          senderId: 'system',
+          senderType: 'system',
+          type: 'system',
+          content: `Conversation reopened by agent. Status changed from ${previousStatus} to assigned.`,
+          timestamp: now,
+          isRead: false
+        };
+        existingChat.messages = existingChat.messages || [];
+        existingChat.messages.push(reopenMessage);
+      }
+
+      if (initialMessage) {
+        const escortMessage = {
+          _id: new mongoose.Types.ObjectId(),
+          senderId: escortId,
+          senderType: 'escort',
+          type: 'text',
+          content: initialMessage,
+          timestamp: now,
+          isRead: false,
+          sender: 'agent',
+          isFirstMessage: !hadMessages
+        };
+        existingChat.messages = existingChat.messages || [];
+        existingChat.messages.push(escortMessage);
+        existingChat.lastMessageTime = now;
+      }
+
+      await existingChat.save();
+
+      await User.findByIdAndUpdate(customerId, { lastActiveDate: now });
+
+      const populatedExistingChat = await Chat.findById(existingChat._id)
+        .populate('customerId', 'username email createdAt')
+        .populate('escortId', 'firstName lastName stageName profileImage')
+        .populate('agentId', 'name agentId');
+
+      if (req.app.locals.wss && shouldReopen) {
+        const notification = {
+          type: 'chat_reopened',
+          chatId: populatedExistingChat._id,
+          customerId: populatedExistingChat.customerId?._id,
+          escortId: populatedExistingChat.escortId?._id,
+          timestamp: now.toISOString(),
+          message: 'Existing contact reopened',
+          chat: populatedExistingChat
+        };
+
+        req.app.locals.wss.clients.forEach(client => {
+          if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
+            try {
+              client.send(JSON.stringify(notification));
+            } catch (wsError) {
+              console.error('Error sending chat reopen notification:', wsError);
+            }
+          }
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        reused: true,
+        message: shouldReopen
+          ? 'Existing contact reopened successfully'
+          : 'Existing chat already active',
+        chat: populatedExistingChat
       });
     }
     
