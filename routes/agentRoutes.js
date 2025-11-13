@@ -789,7 +789,7 @@ router.post('/escorts', async (req, res) => {
       ...req.body,
       country: req.body.country || 'Sweden', // Default to Sweden if not provided
       createdBy: {
-        id: req.agent._id,
+        id: req.agent._id,  // Track which agent created this profile
         type: 'Agent'
       },
       serialNumber,
@@ -799,7 +799,7 @@ router.post('/escorts', async (req, res) => {
     const escort = await EscortProfile.create(escortData);
     
     // Invalidate relevant caches so all agents see the new profile
-    cache.delete(`my_escorts:${req.agent._id}`); // Clear creator's cache
+    cache.delete('all_escorts'); // Clear shared cache for all agents
     cache.delete('all_escorts'); // Clear shared cache
     
     res.status(201).json(escort);
@@ -812,7 +812,7 @@ router.post('/escorts', async (req, res) => {
   }
 });
 
-// Get escorts created by the agent - OPTIMIZED with caching
+// Get all active escorts (accessible by all agents, createdBy tracks original creator)
 router.get('/my-escorts', async (req, res) => {
   const startTime = Date.now();
   
@@ -825,14 +825,11 @@ router.get('/my-escorts', async (req, res) => {
       return res.json(cached);
     }
 
+    // Return all active escorts for all agents (createdBy field tracks original creator)
     const escorts = await EscortProfile.find({ 
-      $or: [
-        { 'createdBy.id': req.agent._id },  // New format: { id, type }
-        { 'createdBy': req.agent._id }      // Old format: just ObjectId
-      ],
       status: 'active'
     })
-  .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats description')
+  .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats createdBy description')
     .sort({ createdAt: -1 })
     .lean() // Use lean() for better performance
     .exec();
@@ -904,17 +901,14 @@ router.get('/escorts/:id', agentAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid escort ID' });
     }
 
-    // Fetch escort and ensure it belongs to the current agent
+    // Fetch escort profile - agents can access all active escorts (createdBy tracked for records)
     const escort = await EscortProfile.findOne({
       _id: id,
-      $or: [
-        { 'createdBy.id': agentId }, // New format
-        { createdBy: agentId }       // Backward compatibility
-      ]
+      status: 'active'
     }).lean();
 
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found' });
+      return res.status(404).json({ message: 'Escort profile not found or inactive' });
     }
 
     res.json(escort);
@@ -1738,29 +1732,22 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
       });
     }
     
-    // First verify that the escort belongs to this agent (cached query)
+    // Verify that the escort exists and is active - agents can access all escorts
     const escort = await EscortProfile.findOne({
       _id: escortId,
-      $or: [
-        { 'createdBy.id': agentId }, // New format
-        { createdBy: agentId }       // Backward compatibility
-      ]
-    }).select('firstName lastName profileImage profilePicture imageUrl').lean();
+      status: 'active'
+    }).select('firstName lastName profileImage profilePicture imageUrl createdBy').lean();
     
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found or not authorized' });
+      return res.status(404).json({ message: 'Escort profile not found or inactive' });
     }
     
     // Use aggregation pipeline for better performance
     const chats = await Chat.aggregate([
-      // Stage 1: Match chats for this escort and agent
+      // Stage 1: Match all chats for this escort
       {
         $match: {
-          escortId: new mongoose.Types.ObjectId(escortId),
-          $or: [
-            { agentId: agentId },
-            { status: 'new' }
-          ]
+          escortId: new mongoose.Types.ObjectId(escortId)
         }
       },
       
@@ -2159,7 +2146,7 @@ router.get('/chats/panic-room', agentAuth, async (req, res) => {
 
 // Image management endpoints
 
-// Upload bulk images for agent's escort profile
+// Upload bulk images for escort profiles
 router.post('/images/upload', agentAuth, async (req, res) => {
   try {
     const { images } = req.body; // Array of {filename, imageData, mimeType, size, description, tags, escortProfileId}
@@ -2182,30 +2169,24 @@ router.post('/images/upload', agentAuth, async (req, res) => {
         return res.status(400).json({ message: `Invalid image type for ${imageData.filename}` });
       }
       
-      // Use provided escortProfileId or find the first escort profile for the agent
+      // Use provided escortProfileId or find the first active escort profile
       let escortProfileId = imageData.escortProfileId;
       if (!escortProfileId) {
         const escortProfile = await EscortProfile.findOne({ 
-          $or: [
-            { 'createdBy.id': agentId },  // New format: { id, type }
-            { 'createdBy': agentId }      // Old format: just ObjectId
-          ]
+          status: 'active'
         });
         if (!escortProfile) {
-          return res.status(404).json({ message: 'Escort profile not found. Please create an escort profile first.' });
+          return res.status(404).json({ message: 'No active escort profile found. Please create an escort profile first.' });
         }
         escortProfileId = escortProfile._id;
       } else {
-        // Verify the escort profile belongs to this agent
+        // Verify the escort profile exists and is active (agents can access all active profiles)
         const escortProfile = await EscortProfile.findOne({ 
           _id: escortProfileId,
-          $or: [
-            { 'createdBy.id': agentId },  // New format: { id, type }
-            { 'createdBy': agentId }      // Old format: just ObjectId
-          ]
+          status: 'active'
         });
         if (!escortProfile) {
-          return res.status(403).json({ message: 'Access denied to this escort profile' });
+          return res.status(404).json({ message: 'Escort profile not found or inactive' });
         }
       }
       
@@ -2245,7 +2226,7 @@ router.post('/images/upload', agentAuth, async (req, res) => {
   }
 });
 
-// Get all images for agent's escort profile
+// Get all images for escort profiles
 router.get('/images', agentAuth, async (req, res) => {
   try {
     const agentId = req.agent._id;
@@ -2344,15 +2325,15 @@ router.put('/escorts/:id', agentAuth, async (req, res) => {
     const escortId = req.params.id;
     const agentId = req.agent._id;
     
-    // Check if escort profile exists and belongs to the agent
+    // Check if escort profile exists - agents can update all active escorts
     const existingEscort = await EscortProfile.findOne({
       _id: escortId,
-      'createdBy.id': agentId
+      status: 'active'
     });
     
     if (!existingEscort) {
       return res.status(404).json({ 
-        message: 'Escort profile not found or not authorized to update' 
+        message: 'Escort profile not found or inactive' 
       });
     }
 
@@ -2367,8 +2348,7 @@ router.put('/escorts/:id', agentAuth, async (req, res) => {
     );
 
     // Invalidate relevant caches so all agents see the updated profile
-    cache.delete(`my_escorts:${agentId}`); // Clear creator's cache
-    cache.delete('all_escorts'); // Clear shared cache
+    cache.delete('all_escorts'); // Clear shared cache for all agents
 
     res.json(updatedEscort);
   } catch (error) {
@@ -2390,18 +2370,14 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid escort ID' });
     }
 
-    // Ensure escort belongs to this agent (support both createdBy formats and legacy)
+    // Find escort profile - agents can delete all active escorts
     const escort = await EscortProfile.findOne({
       _id: escortId,
-      $or: [
-        { 'createdBy.id': agentId },
-        { createdBy: agentId },
-        { agentId: agentId }
-      ]
+      status: 'active'
     });
 
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found or not authorized' });
+      return res.status(404).json({ message: 'Escort profile not found or inactive' });
     }
 
     // Soft delete: mark status inactive and track deletion time
@@ -2413,7 +2389,7 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
     // Deactivate related images (best-effort)
     try {
       await AgentImage.updateMany(
-        { escortProfileId: escortId, agentId },
+        { escortProfileId: escortId },
         { $set: { isActive: false } }
       );
     } catch (imgErr) {
@@ -2421,8 +2397,7 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
     }
 
     // Invalidate relevant caches so all agents see the profile removal
-    cache.delete(`my_escorts:${agentId}`); // Clear creator's cache
-    cache.delete('all_escorts'); // Clear shared cache
+    cache.delete('all_escorts'); // Clear shared cache for all agents
 
     return res.json({
       success: true,
@@ -2446,14 +2421,10 @@ router.get('/escorts/:id', agentAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid escort ID' });
     }
 
-    // Allow fetching if created by this agent (new format or legacy) and active
+    // Allow fetching any active escort profile
     const escort = await EscortProfile.findOne({
       _id: escortId,
-      status: 'active',
-      $or: [
-        { 'createdBy.id': req.agent._id },
-        { createdBy: req.agent._id }
-      ]
+      status: 'active'
     }).lean();
 
     if (!escort) {
@@ -2480,18 +2451,14 @@ router.get('/escorts/:id', agentAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid escort ID' });
     }
 
-    // Allow access if the agent created the escort (new createdBy format) or legacy agentId match
+    // Find escort profile - agents can access all active escorts
     const escort = await EscortProfile.findOne({
       _id: escortId,
-      $or: [
-        { 'createdBy.id': agentId },
-        { createdBy: agentId },
-        { agentId: agentId } // legacy field in some documents
-      ]
+      status: 'active'
     }).lean();
 
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found' });
+      return res.status(404).json({ message: 'Escort profile not found or inactive' });
     }
 
     res.json(escort);
@@ -2525,8 +2492,8 @@ router.get('/customers/:customerId', agentAuth, async (req, res) => {
       return res.status(404).json({ message: 'Customer not found' });
     }
 
-    // Get chat history for this customer with any of the agent's escorts
-    const escortProfiles = await EscortProfile.find({ agentId });
+    // Get chat history for this customer with any active escorts
+    const escortProfiles = await EscortProfile.find({ status: 'active' });
     const escortIds = escortProfiles.map(profile => profile._id);
 
     const chatHistory = await Chat.find({
@@ -2579,10 +2546,7 @@ router.get('/agent-customers/:agentId', agentAuth, async (req, res) => {
   try {
     const { agentId } = req.params;
     
-    // Access control - agents can only see their own assigned customers
-    if (!req.admin && req.agent._id.toString() !== agentId) {
-      return res.status(403).json({ message: 'Access denied' });
-    }
+    // Allow all agents to view any agent's assigned customers
     
     const AgentCustomer = require('../models/AgentCustomer');
     
@@ -2618,15 +2582,15 @@ router.get('/customer-chats/:customerId/:agentId', agentAuth, async (req, res) =
     const { customerId, agentId } = req.params;
     console.log(`Looking for existing chats for customer ${customerId} and agent ${agentId}`);
 
-    // Get all escort profiles owned by the agent
-    const escortProfiles = await EscortProfile.find({ agentId });
+    // Get all active escort profiles
+    const escortProfiles = await EscortProfile.find({ status: 'active' });
     const escortIds = escortProfiles.map(profile => profile._id);
     
     if (!escortIds.length) {
-      return res.status(404).json({ message: 'No escort profiles found for this agent' });
+      return res.status(404).json({ message: 'No active escort profiles found' });
     }
 
-    // Find any active chats between this customer and any of the agent's escorts
+    // Find any active chats between this customer and any active escorts
     const existingChat = await Chat.findOne({
       customerId,
       escortId: { $in: escortIds },
@@ -2653,7 +2617,7 @@ router.get('/customer-chats/:customerId/:agentId', agentAuth, async (req, res) =
   }
 });
 
-// Create a new chat between a customer and one of the agent's escorts
+// Create a new chat between a customer and an available escort
 router.post('/create-chat', agentAuth, async (req, res) => {
   try {
     const { customerId, agentId } = req.body;
@@ -2664,11 +2628,11 @@ router.post('/create-chat', agentAuth, async (req, res) => {
 
     console.log(`Creating chat for customer ${customerId} with agent ${agentId}`);
 
-    // Get the agent's escort profiles
-    const escortProfiles = await EscortProfile.find({ agentId });
+    // Get all active escort profiles
+    const escortProfiles = await EscortProfile.find({ status: 'active' });
     
     if (!escortProfiles.length) {
-      return res.status(404).json({ message: 'No escort profiles found for this agent' });
+      return res.status(404).json({ message: 'No active escort profiles found' });
     }
 
     // Use the first available escort profile (in a real system, you might want to use
@@ -2699,6 +2663,94 @@ router.post('/create-chat', agentAuth, async (req, res) => {
   } catch (error) {
     console.error('Chat creation error:', error);
     res.status(500).json({ message: 'Failed to create chat', error: error.message });
+  }
+});
+
+// Get escorts created by a specific agent (for record-keeping and administrative purposes)
+router.get('/escorts-by-creator/:agentId', agentAuth, async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(agentId)) {
+      return res.status(400).json({ message: 'Invalid agent ID' });
+    }
+
+    const escorts = await EscortProfile.find({
+      $or: [
+        { 'createdBy.id': mongoose.Types.ObjectId(agentId) },
+        { 'createdBy': mongoose.Types.ObjectId(agentId) }
+      ],
+      status: 'active'
+    })
+    .select('username firstName gender profileImage country region createdAt stats createdBy')
+    .sort({ createdAt: -1 })
+    .lean();
+
+    res.json({
+      success: true,
+      count: escorts.length,
+      escorts
+    });
+  } catch (error) {
+    console.error('Error fetching escorts by creator:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch escorts by creator',
+      error: error.message 
+    });
+  }
+});
+
+// Get escort creation statistics by agent (for analytics and record-keeping)
+router.get('/escort-creation-stats', agentAuth, async (req, res) => {
+  try {
+    const stats = await EscortProfile.aggregate([
+      {
+        $match: { status: 'active' }
+      },
+      {
+        $group: {
+          _id: {
+            agentId: '$createdBy.id',
+            agentType: '$createdBy.type'
+          },
+          count: { $sum: 1 },
+          firstCreated: { $min: '$createdAt' },
+          lastCreated: { $max: '$createdAt' }
+        }
+      },
+      {
+        $lookup: {
+          from: 'agents',
+          localField: '_id.agentId',
+          foreignField: '_id',
+          as: 'agentInfo',
+          pipeline: [
+            { $project: { name: 1, agentId: 1 } }
+          ]
+        }
+      },
+      {
+        $addFields: {
+          agentName: { $arrayElemAt: ['$agentInfo.name', 0] },
+          agentCode: { $arrayElemAt: ['$agentInfo.agentId', 0] }
+        }
+      },
+      {
+        $sort: { count: -1 }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      totalAgents: stats.length,
+      stats
+    });
+  } catch (error) {
+    console.error('Error fetching escort creation stats:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch creation statistics',
+      error: error.message 
+    });
   }
 });
 
