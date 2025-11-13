@@ -550,14 +550,26 @@ router.post('/start', async (req, res) => {
       });
     }
 
+    // Check if customer has an assigned agent
+    const AgentCustomer = require('../models/AgentCustomer');
+    const assignment = await AgentCustomer.findOne({ 
+      customerId: req.user.id, 
+      status: 'active' 
+    });
+
     // Create new chat if none exists
     const newChat = await Chat.create({
       escortId: req.body.escortId,
       customerId: req.user.id,
+      agentId: assignment?.agentId || null, // Assign agent if available
       status: 'new',
       messages: [],
       createdAt: new Date()
     });
+
+    if (assignment) {
+      console.log(`New chat ${newChat._id} automatically assigned to agent ${assignment.agentId}`);
+    }
 
     // Populate escort details
     const chat = await Chat.findById(newChat._id)

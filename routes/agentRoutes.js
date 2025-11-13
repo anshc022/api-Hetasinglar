@@ -2639,14 +2639,26 @@ router.post('/create-chat', agentAuth, async (req, res) => {
     // a more sophisticated selection algorithm)
     const escortProfile = escortProfiles[0];
 
+    // Check if customer has an assigned agent
+    const AgentCustomer = require('../models/AgentCustomer');
+    const assignment = await AgentCustomer.findOne({ 
+      customerId: customerId, 
+      status: 'active' 
+    });
+
     // Create a new chat
     const newChat = await Chat.create({
       escortId: escortProfile._id,
       customerId: customerId,
+      agentId: assignment?.agentId || null, // Assign agent if available
       status: 'new',
       messages: [],
       createdAt: new Date()
     });
+
+    if (assignment) {
+      console.log(`New chat ${newChat._id} automatically assigned to agent ${assignment.agentId}`);
+    }
 
     // Populate escort details
     const chat = await Chat.findById(newChat._id)
