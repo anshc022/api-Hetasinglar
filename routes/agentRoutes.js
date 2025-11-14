@@ -263,9 +263,6 @@ router.get('/escorts/active', async (req, res) => {
       performanceMonitor.recordPhase(requestId, 'cache-miss', { cacheKey });
       // Cache miss - fetching from database
 
-      // Determine query type for optimization
-      const useFull = (req.query.full === 'true');
-
       // De-duplicate concurrent fetches per cacheKey
       if (inflightFetches.has(cacheKey)) {
         profiles = await inflightFetches.get(cacheKey);
@@ -275,6 +272,7 @@ router.get('/escorts/active', async (req, res) => {
           const essentialFields = '_id username firstName profileImage profilePicture imageUrl country region status createdAt';
           // UI-focused full selection - only fields actually used by frontend
           const uiOptimizedFields = essentialFields + ' interests profession';
+          const useFull = (req.query.full === 'true');
 
           let query = EscortProfile.find(filter)
             .select(useFull ? uiOptimizedFields : essentialFields)
