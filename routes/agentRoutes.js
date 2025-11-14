@@ -9,6 +9,7 @@ const Chat = require('../models/Chat');
 const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
+const ActiveUsersService = require('../services/activeUsers');
 const crypto = require('crypto');
 const { performanceMonitor } = require('../utils/performanceMonitor');
 const { isValidSwedishRegion, getSwedishRegions, normalizeSwedishRegion } = require('../constants/swedishRegions');
@@ -1365,19 +1366,88 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
   try {
     // Use global cache key with version for optimized endpoint
     const cacheKey = `live_queue:global:v2`;
+
+    const applyPresenceToChats = (sourceChats) => {
+      if (!sourceChats) {
+        return [];
+      }
+
+      const chatsArray = Array.isArray(sourceChats)
+        ? sourceChats
+        : (Array.isArray(sourceChats.liveQueue) ? sourceChats.liveQueue : []);
+
+      if (!Array.isArray(chatsArray)) {
+        return [];
+      }
+
+      const activeUsersMap = (typeof ActiveUsersService?.getActiveUsers === 'function')
+        ? ActiveUsersService.getActiveUsers()
+        : new Map();
+      const presenceSnapshot = new Date();
+
+      return chatsArray.map((chat) => {
+        const customerProfile = (chat.customerId && typeof chat.customerId === 'object' && chat.customerId._id)
+          ? chat.customerId
+          : (chat.customerProfile && typeof chat.customerProfile === 'object' && chat.customerProfile._id ? chat.customerProfile : null);
+
+        let customerObjectId = customerProfile?._id || chat.customerObjectId || null;
+        if (!customerObjectId && typeof chat.customerId === 'string') {
+          customerObjectId = chat.customerId;
+        }
+
+        const customerIdStr = customerObjectId ? customerObjectId.toString() : null;
+        const isOnline = !!(customerIdStr && activeUsersMap.has(customerIdStr));
+        const activeTimestamp = customerIdStr ? activeUsersMap.get(customerIdStr) : null;
+        const lastSeen = isOnline
+          ? presenceSnapshot
+          : (activeTimestamp || customerProfile?.lastActiveDate || chat.lastActive || chat.updatedAt);
+
+        const escortProfile = (chat.escortId && typeof chat.escortId === 'object' && chat.escortId._id)
+          ? chat.escortId
+          : (chat.escortProfile && typeof chat.escortProfile === 'object' && chat.escortProfile._id ? chat.escortProfile : null);
+
+        let escortObjectId = escortProfile?._id || chat.escortObjectId || null;
+        if (!escortObjectId && typeof chat.escortId === 'string') {
+          escortObjectId = chat.escortId;
+        }
+        const escortIdStr = escortObjectId ? escortObjectId.toString() : null;
+
+        const presence = {
+          isOnline,
+          status: isOnline ? 'online' : 'offline',
+          lastSeen
+        };
+
+        return {
+          ...chat,
+          customerId: customerProfile || (customerIdStr ? { _id: customerIdStr } : chat.customerId),
+          customerProfile: customerProfile || chat.customerProfile || null,
+          customerObjectId: customerIdStr || null,
+          escortId: escortProfile || (escortIdStr ? { _id: escortIdStr } : chat.escortId),
+          escortProfile: escortProfile || chat.escortProfile || null,
+          escortObjectId: escortIdStr || null,
+          isUserActive: isOnline,
+          presence,
+          lastActive: lastSeen
+        };
+      });
+    };
     
     // Check fallback cache first - reduced TTL for fresher data
     if (liveQueueCache.has(cacheKey)) {
       const cachedData = liveQueueCache.get(cacheKey);
+      const hydrated = applyPresenceToChats(cachedData);
+      liveQueueCache.set(cacheKey, hydrated);
       console.log(`🚀 OPTIMIZED Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
-      return res.json(cachedData);
+      return res.json(hydrated);
     }
     
     // Check main cache as backup
     const cached = cache.get && cache.get(cacheKey);
     if (cached) {
+      const hydrated = applyPresenceToChats(cached);
       console.log(`🚀 Main Cache HIT: optimized live-queue (${Date.now() - startTime}ms)`);
-      return res.json(cached);
+      return res.json(hydrated);
     }
     
     console.log(`🔍 Cache MISS: generating optimized live-queue data`);
@@ -1458,7 +1528,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           localField: 'customerId', 
           foreignField: '_id',
           as: 'customer',
-          pipeline: [{ $project: { username: 1, _id: 1 } }]
+          pipeline: [{ $project: { username: 1, _id: 1, lastActiveDate: 1 } }]
         }
       },
       {
@@ -1576,10 +1646,12 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         // Stage 9: Final projection - essential data only
         $project: {
           _id: 1,
-          customerId: 1,
+          customerId: '$customerProfile',
           customerProfile: '$customerProfile',
-          escortId: 1,
+          customerObjectId: '$customerId',
+          escortId: '$escortProfile',
           escortProfile: '$escortProfile',
+          escortObjectId: '$escortId',
           agentId: 1,
           assignedAgent: 1,
           status: 1,
@@ -1623,8 +1695,10 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       }
     ]);
 
+    const enrichedChats = applyPresenceToChats(chats);
+
     // STEP 3: Optimized caching with shorter TTL
-    liveQueueCache.set(cacheKey, chats);
+    liveQueueCache.set(cacheKey, enrichedChats);
     console.log(`💾 OPTIMIZED cache set for global live-queue`);
     
     // Clear cache after 20 seconds (shorter for fresher data)
@@ -1641,7 +1715,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
     // Also set main cache
     try {
       if (cache.set) {
-        cache.set(cacheKey, chats, 30 * 1000); // 30 seconds
+        cache.set(cacheKey, enrichedChats, 30 * 1000); // 30 seconds
         console.log(`🗄️ Main cache also set for optimized live-queue`);
       }
     } catch (cacheError) {
@@ -1658,8 +1732,8 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       console.log(`⚡ FAST: optimized live-queue took ${responseTime}ms`);
     }
     
-    console.log(`🚀 OPTIMIZED Global live queue: ${chats.length} chats in ${responseTime}ms`);
-    res.json(chats);
+    console.log(`🚀 OPTIMIZED Global live queue: ${enrichedChats.length} chats in ${responseTime}ms`);
+    res.json(enrichedChats);
     
   } catch (error) {
     console.error('Error in optimized live queue:', error);
