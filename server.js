@@ -172,6 +172,7 @@ app.use('/api/logs', logRoutes); // Add logs API routes
 app.use('/api/first-contact', firstContactRoutes); // Add first contact API routes
 app.use('/api/likes', likeRoutes); // Add likes API routes
 app.use('/api/users', userRoutes);
+app.use('/api/email-test', require('./routes/emailTestRoutes')); // Add email test routes
 
 // Expose helper to clear fallback live queue cache
 if (typeof agentRoutes.clearLiveQueueFallbackCache === 'function') {
