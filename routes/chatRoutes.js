@@ -1019,7 +1019,7 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
           });
         }
 
-        // Email notification to customer when agent sends a new message
+        // Enhanced email notification to customer when agent sends a new message
         try {
           if (req.agent) {
             // Throttle notifications per chat to avoid spam (5 minutes lock)
@@ -1029,6 +1029,8 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
             const uid = chat.customerId?.toString();
             const isUserActive = !!(uid && activeMap && activeMap.has(uid));
 
+            console.log(`📧 Email notification check for chat ${chat._id}: locked=${!!locked}, userActive=${isUserActive}`);
+
             if (!locked) {
               // Fetch user and escort details minimal fields
               const [userDoc, escortDoc] = await Promise.all([
@@ -1036,23 +1038,40 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
                 EscortProfile.findById(chat.escortId).select('firstName').lean()
               ]);
 
+              if (!userDoc) {
+                console.log('⚠️ User not found for notification');
+                return;
+              }
+
               const emailOk = !!(userDoc?.email);
               const wantsEmails = !!(userDoc?.preferences?.emailUpdates !== false && userDoc?.preferences?.notifications !== false);
 
-              // Granular settings
-              const msgSettings = userDoc?.preferences?.notificationSettings?.email?.messages;
+              // Granular settings with better defaults
+              const msgSettings = userDoc?.preferences?.notificationSettings?.email?.messages || {};
               const granularEnabled = (msgSettings?.enabled !== false);
-              const offlineMin = Math.max(0, parseInt(msgSettings?.onlyWhenOfflineMinutes ?? 10));
-              // If an offline threshold is set, suppress emails while user is considered "online"
+              const offlineMin = Math.max(0, parseInt(msgSettings?.onlyWhenOfflineMinutes ?? 5)); // Reduced from 10 to 5 minutes
+              
+              // Enhanced offline rule logic
               let passesOfflineRule = true;
+              let offlineStatus = 'unknown';
+              
               if (offlineMin > 0) {
                 if (isUserActive) {
                   passesOfflineRule = false;
+                  offlineStatus = 'active';
                 } else if (userDoc?.lastActiveDate) {
                   const lastActive = new Date(userDoc.lastActiveDate).getTime();
                   const msSince = Date.now() - lastActive;
                   passesOfflineRule = msSince >= offlineMin * 60 * 1000;
+                  offlineStatus = `offline for ${Math.round(msSince / 60000)}min (required: ${offlineMin}min)`;
+                } else {
+                  // No lastActiveDate - consider offline
+                  passesOfflineRule = true;
+                  offlineStatus = 'no activity data (considered offline)';
                 }
+              } else {
+                // No offline requirement - always send
+                offlineStatus = 'no offline requirement';
               }
 
               // Per-escort override: if present for this escort, require enabled=true
@@ -1065,28 +1084,55 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
                 }
               }
 
+              console.log(`📧 Notification eligibility for ${userDoc.username}:`, {
+                emailOk,
+                wantsEmails,
+                granularEnabled,
+                passesOfflineRule,
+                passesPerEscort,
+                offlineStatus,
+                userEmail: userDoc.email ? '[PRESENT]' : '[MISSING]'
+              });
+
               if (emailOk && wantsEmails && granularEnabled && passesOfflineRule && passesPerEscort) {
                 const fromName = escortDoc?.firstName || 'Escort';
                 const snippet = newMessage.messageType === 'image' ? '📷 Image message' : (newMessage.message || '');
                 const chatLink = process.env.FRONTEND_URL || 'https://hetasinglar.se';
+                
                 try {
-                  await emailService.sendMessageNotification(
+                  console.log(`📧 Sending email notification to ${userDoc.email} from ${fromName}`);
+                  const emailResult = await emailService.sendMessageNotification(
                     userDoc.email,
                     userDoc.username,
                     fromName,
                     snippet,
                     chatLink
                   );
-                  // Set throttle lock for 5 minutes
-                  cache.set(lockKey, true, 5 * 60 * 1000);
+                  
+                  if (emailResult) {
+                    console.log('✅ Email notification sent successfully');
+                    // Set throttle lock for 5 minutes
+                    cache.set(lockKey, true, 5 * 60 * 1000);
+                  } else {
+                    console.log('❌ Email notification failed (no exception thrown)');
+                  }
                 } catch (mailErr) {
-                  console.warn('Email notification send failed:', mailErr?.message || mailErr);
+                  console.error('❌ Email notification send failed:', {
+                    error: mailErr?.message || mailErr,
+                    code: mailErr?.code,
+                    responseCode: mailErr?.responseCode,
+                    command: mailErr?.command
+                  });
                 }
+              } else {
+                console.log('⚠️ Email notification skipped due to eligibility criteria');
               }
+            } else {
+              console.log('⚠️ Email notification skipped - throttled (5min lock active)');
             }
           }
         } catch (notifyErr) {
-          console.warn('Notification block error:', notifyErr?.message || notifyErr);
+          console.error('❌ Notification block error:', notifyErr?.message || notifyErr, notifyErr?.stack);
         }
 
         console.log(`⚡ Background operations completed for chat ${chat._id}`);
