@@ -6,6 +6,16 @@ const escortLogSchema = new mongoose.Schema({
     ref: 'Escort',
     required: true
   },
+  chatId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Chat',
+    required: true
+  },
+  customerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
+  },
   category: {
     type: String,
     enum: ['City', 'Job', 'Family', 'Money', 'Relationship', 'Health', 'Travel', 'Other'],

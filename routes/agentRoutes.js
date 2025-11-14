@@ -9,10 +9,8 @@ const Chat = require('../models/Chat');
 const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
-const chatModeratorsService = require('../services/chatModerators');
-const ActiveUsersService = require('../services/activeUsers');
 const crypto = require('crypto');
-// const { performanceMonitor } = require('../utils/performanceMonitor'); // Temporarily disabled for deployment
+const { performanceMonitor } = require('../utils/performanceMonitor');
 const { isValidSwedishRegion, getSwedishRegions, normalizeSwedishRegion } = require('../constants/swedishRegions');
 const { isValidRelationshipStatus, getRelationshipStatuses } = require('../constants/relationshipStatuses');
 // Inflight map to de-duplicate concurrent fetches per cacheKey
@@ -22,86 +20,17 @@ const inflightFetches = new Map();
 const liveQueueCache = new Map();
 const cacheTimers = new Map();
 
-const toDateOrNull = (value) => {
-  if (!value) {
-    return null;
-  }
-
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-};
-
-const attachModerators = (chats) => {
-  if (!Array.isArray(chats)) {
-    return [];
-  }
-
-  const activeUsersMap = ActiveUsersService && typeof ActiveUsersService.getActiveUsers === 'function'
-    ? ActiveUsersService.getActiveUsers()
-    : null;
-  const hasActiveUsersMap = !!(activeUsersMap && typeof activeUsersMap.has === 'function');
-
-  return chats.map((chat) => {
-    const chatId = chat?._id && chat._id.toString ? chat._id.toString() : chat?._id;
-    const moderators = chatModeratorsService.getModerators(chatId);
-
-    const customerInfo = chat?.customerId;
-    let customerIdValue = customerInfo;
-
-    if (customerInfo && typeof customerInfo === 'object') {
-      customerIdValue = customerInfo._id || customerInfo.id || customerInfo.userId || null;
-    }
-
-    const normalizedCustomerId = customerIdValue && typeof customerIdValue.toString === 'function'
-      ? customerIdValue.toString()
-      : customerIdValue || null;
-
-    const isUserActive = hasActiveUsersMap && normalizedCustomerId
-      ? activeUsersMap.has(normalizedCustomerId)
-      : Boolean(chat?.isUserActive);
-
-    const activeEntry = hasActiveUsersMap && normalizedCustomerId
-      ? activeUsersMap.get(normalizedCustomerId)
-      : null;
-
-    const fallbackLastActive =
-      toDateOrNull(chat?.lastActive) ||
-      toDateOrNull(customerInfo && customerInfo.lastActiveDate) ||
-      toDateOrNull(chat?.lastMessage && chat.lastMessage.timestamp) ||
-      toDateOrNull(chat?.updatedAt) ||
-      toDateOrNull(chat?.createdAt);
-
-    const lastActive = toDateOrNull(activeEntry) || fallbackLastActive;
-
-    let enrichedCustomer = customerInfo;
-    if (customerInfo && typeof customerInfo === 'object') {
-      enrichedCustomer = {
-        ...customerInfo,
-        lastActiveDate: customerInfo.lastActiveDate || lastActive || undefined
-      };
-    }
-
-    return {
-      ...chat,
-      moderators,
-      isUserActive,
-      lastActive,
-      customerId: enrichedCustomer
-    };
-  });
-};
-
 // Performance monitoring endpoint
 router.get('/performance-stats', async (req, res) => {
   try {
     const escortCount = await EscortProfile.countDocuments({ status: 'active' });
-    // const perfStats = // performanceMonitor.getStats();
+    const perfStats = performanceMonitor.getStats();
     
     res.json({
       status: 'monitoring',
       timestamp: new Date().toISOString(),
       escortCount,
-      performance: { activeRequests: 0, slowQueryThreshold: 1000, warningThreshold: 500 }, // perfStats,
+      performance: perfStats,
       optimizations: {
         fieldOptimization: 'UI-focused field selection',
         resultLimiting: 'Smart limits (50 full, 100 basic)',
@@ -288,29 +217,24 @@ router.use(async (req, res, next) => {
 
 // Get active escort profiles (with optional filtering & pagination) - OPTIMIZED
 router.get('/escorts/active', async (req, res) => {
-  const requestId = 'temp-' + Math.random().toString(36).substr(2, 9); // performanceMonitor.generateRequestId();
-  const startTime = Date.now(); // simple local timer since performanceMonitor is disabled
-  // const timer = // performanceMonitor.startTimer(requestId, 'escorts/active');
+  const requestId = performanceMonitor.generateRequestId();
+  const timer = performanceMonitor.startTimer(requestId, 'escorts/active');
   
   try {
-    const MAX_PAGE_SIZE = 200;
     const page = parseInt(req.query.page, 10) || 0;
-    const rawPageSize = parseInt(req.query.pageSize, 10);
-    const pageSize = Math.min(Math.max(rawPageSize || 0, 0), MAX_PAGE_SIZE);
+    const pageSize = Math.max(parseInt(req.query.pageSize, 10) || 0, 0);
     const withTotals = (req.query.withTotals || 'false').toLowerCase() === 'true';
     const format = (req.query.format || 'array').toLowerCase(); // 'array' (default) or 'v2'
     const gender = req.query.gender;
     const country = req.query.country;
     const region = req.query.region;
-    // Normalize full flag once at route scope so it's available everywhere
-    const useFull = String(req.query.full || '').toLowerCase() === 'true';
     
-    // performanceMonitor.recordPhase(requestId, 'init', {
-    //   full: req.query.full,
-    //   filters: {gender, country, region},
-    //   pagination: page > 0,
-    //   pageSize
-    // });
+    performanceMonitor.recordPhase(requestId, 'init', {
+      full: req.query.full,
+      filters: {gender, country, region},
+      pagination: page > 0,
+      pageSize
+    });
     
     // Warn about potentially expensive full queries
     if (req.query.full === 'true' && !page) {
@@ -336,7 +260,7 @@ router.get('/escorts/active', async (req, res) => {
     let cached = false;
     
     if (!profiles) {
-      // performanceMonitor.recordPhase(requestId, 'cache-miss', { cacheKey });
+      performanceMonitor.recordPhase(requestId, 'cache-miss', { cacheKey });
       console.log(`[${requestId}] Cache miss - fetching escorts from database for key ${cacheKey}`);
 
       // De-duplicate concurrent fetches per cacheKey
@@ -347,7 +271,8 @@ router.get('/escorts/active', async (req, res) => {
           // Optimized field selection based on actual frontend usage
           const essentialFields = '_id username firstName profileImage profilePicture imageUrl country region status createdAt';
           // UI-focused full selection - only fields actually used by frontend
-          const uiOptimizedFields = essentialFields + ' interests profession description';
+          const uiOptimizedFields = essentialFields + ' interests profession';
+          const useFull = (req.query.full === 'true');
 
           let query = EscortProfile.find(filter)
             .select(useFull ? uiOptimizedFields : essentialFields)
@@ -431,14 +356,14 @@ router.get('/escorts/active', async (req, res) => {
       }
       
       cache.set(cacheKey, profiles, ttl);
-      // performanceMonitor.recordPhase(requestId, 'db-complete', { 
-      //   resultCount: profiles.length,
-      //   ttl: ttl/1000
-      // });
+      performanceMonitor.recordPhase(requestId, 'db-complete', { 
+        resultCount: profiles.length,
+        ttl: ttl/1000
+      });
       console.log(`[${requestId}] Cached ${profiles.length} escort profiles (TTL ${ttl/1000}s)`);
     } else {
       cached = true;
-      // performanceMonitor.recordPhase(requestId, 'cache-hit', { cacheKey });
+      performanceMonitor.recordPhase(requestId, 'cache-hit', { cacheKey });
       console.log(`[${requestId}] Cache hit - returning ${Array.isArray(profiles) ? profiles.length : 0} escort profiles`);
     }
     // Choose response shape (default array for backward compatibility)
@@ -463,17 +388,16 @@ router.get('/escorts/active', async (req, res) => {
     
     // Complete performance monitoring
     const resultCount = Array.isArray(profiles) ? profiles.length : 0;
-    // const perfResult = // performanceMonitor.endTimer(requestId, resultCount, cached);
+    const perfResult = performanceMonitor.endTimer(requestId, resultCount, cached);
     
-  // Add performance headers for monitoring (fallback timer)
-  const totalDuration = Date.now() - startTime;
-  res.set('X-Response-Time', `${totalDuration}ms`);
+    // Add performance headers for monitoring
+    res.set('X-Response-Time', `${perfResult.totalDuration}ms`);
     res.set('X-Result-Count', String(resultCount));
     res.set('X-Cache-Status', cached ? 'HIT' : 'MISS');
     
     res.json(responseBody);
   } catch (error) {
-    // performanceMonitor.endTimer(requestId, 0, false);
+    performanceMonitor.endTimer(requestId, 0, false);
     console.error(`[${requestId}] ❌ Query failed:`, error);
     res.status(500).json({
       message: 'Failed to fetch escort profiles',
@@ -789,7 +713,7 @@ router.post('/escorts', async (req, res) => {
       ...req.body,
       country: req.body.country || 'Sweden', // Default to Sweden if not provided
       createdBy: {
-        id: req.agent._id,  // Track which agent created this profile
+        id: req.agent._id,
         type: 'Agent'
       },
       serialNumber,
@@ -799,7 +723,7 @@ router.post('/escorts', async (req, res) => {
     const escort = await EscortProfile.create(escortData);
     
     // Invalidate relevant caches so all agents see the new profile
-    cache.delete('all_escorts'); // Clear shared cache for all agents
+    cache.delete(`my_escorts:${req.agent._id}`); // Clear creator's cache
     cache.delete('all_escorts'); // Clear shared cache
     
     res.status(201).json(escort);
@@ -812,7 +736,7 @@ router.post('/escorts', async (req, res) => {
   }
 });
 
-// Get all active escorts (accessible by all agents, createdBy tracks original creator)
+// Get escorts created by the agent - OPTIMIZED with caching
 router.get('/my-escorts', async (req, res) => {
   const startTime = Date.now();
   
@@ -825,11 +749,14 @@ router.get('/my-escorts', async (req, res) => {
       return res.json(cached);
     }
 
-    // Return all active escorts for all agents (createdBy field tracks original creator)
     const escorts = await EscortProfile.find({ 
+      $or: [
+        { 'createdBy.id': req.agent._id },  // New format: { id, type }
+        { 'createdBy': req.agent._id }      // Old format: just ObjectId
+      ],
       status: 'active'
     })
-  .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats createdBy description')
+  .select('username firstName gender profileImage profilePicture imageUrl country region status interests profession height dateOfBirth serialNumber massMailActive createdAt stats description')
     .sort({ createdAt: -1 })
     .lean() // Use lean() for better performance
     .exec();
@@ -901,14 +828,17 @@ router.get('/escorts/:id', agentAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid escort ID' });
     }
 
-    // Fetch escort profile - agents can access all active escorts (createdBy tracked for records)
+    // Fetch escort and ensure it belongs to the current agent
     const escort = await EscortProfile.findOne({
       _id: id,
-      status: 'active'
+      $or: [
+        { 'createdBy.id': agentId }, // New format
+        { createdBy: agentId }       // Backward compatibility
+      ]
     }).lean();
 
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found or inactive' });
+      return res.status(404).json({ message: 'Escort profile not found' });
     }
 
     res.json(escort);
@@ -1409,27 +1339,6 @@ router.post('/chats/:chatId/assign', agentAuth, async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
-    try {
-      clearLiveQueueFallbackCache();
-      if (cache && typeof cache.delete === 'function') {
-        cache.delete('live_queue:global');
-        cache.delete('live_queue:global:v2');
-        cache.delete('live_queue:global:v3');
-        cache.delete('live_queue_updates:all');
-      }
-      if (cache && cache.cache && typeof cache.cache.keys === 'function') {
-        const keysToRemove = [];
-        for (const key of cache.cache.keys()) {
-          if (typeof key === 'string' && key.startsWith('live_queue:')) {
-            keysToRemove.push(key);
-          }
-        }
-        keysToRemove.forEach(k => cache.delete(k));
-      }
-    } catch (cacheError) {
-      console.warn('Live queue cache clear (assignment) warning:', cacheError?.message || cacheError);
-    }
-
     res.json({
       success: true,
       message: 'Agent assigned to chat successfully',
@@ -1456,20 +1365,20 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
   
   try {
     // Use global cache key with version for optimized endpoint
-  const cacheKey = `live_queue:global:v3`;
+    const cacheKey = `live_queue:global:v2`;
     
     // Check fallback cache first - reduced TTL for fresher data
     if (liveQueueCache.has(cacheKey)) {
       const cachedData = liveQueueCache.get(cacheKey);
       console.log(`🚀 OPTIMIZED Cache HIT: global live-queue (${Date.now() - startTime}ms)`);
-      return res.json(attachModerators(cachedData));
+      return res.json(cachedData);
     }
     
     // Check main cache as backup
     const cached = cache.get && cache.get(cacheKey);
     if (cached) {
       console.log(`🚀 Main Cache HIT: optimized live-queue (${Date.now() - startTime}ms)`);
-      return res.json(attachModerators(cached));
+      return res.json(cached);
     }
     
     console.log(`🔍 Cache MISS: generating optimized live-queue data`);
@@ -1550,7 +1459,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
           localField: 'customerId', 
           foreignField: '_id',
           as: 'customer',
-          pipeline: [{ $project: { username: 1, _id: 1, lastActiveDate: 1 } }]
+          pipeline: [{ $project: { username: 1, _id: 1 } }]
         }
       },
       {
@@ -1563,65 +1472,17 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 6: Lookup assigned agent details
-        $lookup: {
-          from: 'agents',
-          localField: 'agentId',
-          foreignField: '_id',
-          as: 'assignedAgentDetails',
-          pipeline: [
-            {
-              $project: {
-                name: 1,
-                agentId: 1
-              }
-            }
-          ]
-        }
-      },
-      {
-        // Stage 7: Build assigned agent structure
-        $addFields: {
-          assignedAgent: {
-            $let: {
-              vars: {
-                agentDoc: { $arrayElemAt: ['$assignedAgentDetails', 0] }
-              },
-              in: {
-                $cond: [
-                  { $ne: ['$agentId', null] },
-                  {
-                    _id: '$agentId',
-                    name: { $ifNull: ['$$agentDoc.name', 'Unknown Agent'] },
-                    agentId: { $ifNull: ['$$agentDoc.agentId', 'Unknown'] }
-                  },
-                  null
-                ]
-              }
-            }
-          }
-        }
-      },
-      {
-        // Stage 8: Final projection - essential data only
+        // Stage 6: Final projection - essential data only
         $project: {
           _id: 1,
           customerId: { $arrayElemAt: ['$customer', 0] },
           escortId: { $arrayElemAt: ['$escort', 0] },
           agentId: 1,
-          assignedAgent: 1,
           status: 1,
           customerName: 1,
           isInPanicRoom: 1,
           createdAt: 1,
           updatedAt: 1,
-          lastActive: {
-            $max: [
-              '$updatedAt',
-              { $ifNull: ['$lastMessage.timestamp', '$updatedAt'] },
-              { $ifNull: [{ $arrayElemAt: ['$customer.lastActiveDate', 0] }, '$updatedAt'] }
-            ]
-          },
           unreadCount: 1,
           priority: 1,
           reminderActive: 1,
@@ -1636,8 +1497,8 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
             message: {
               $cond: [
                 { $eq: ['$lastMessage.messageType', 'image'] },
-                '\ud83d\udcf7 Image',
-                { $substrCP: [{ $ifNull: ['$lastMessage.message', ''] }, 0, 50] }
+                '📷 Image',
+                { $substr: [{ $ifNull: ['$lastMessage.message', ''] }, 0, 50] }
               ]
             },
             messageType: '$lastMessage.messageType',
@@ -1649,11 +1510,11 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 9: Efficient sort
+        // Stage 7: Efficient sort
         $sort: { priority: -1, updatedAt: -1 }
       },
       {
-        // Stage 10: Performance limit
+        // Stage 8: Performance limit
         $limit: 25
       }
     ]);
@@ -1693,9 +1554,8 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       console.log(`⚡ FAST: optimized live-queue took ${responseTime}ms`);
     }
     
-  const enrichedChats = attachModerators(chats);
-  console.log(`🚀 OPTIMIZED Global live queue: ${chats.length} chats in ${responseTime}ms`);
-  res.json(enrichedChats);
+    console.log(`🚀 OPTIMIZED Global live queue: ${chats.length} chats in ${responseTime}ms`);
+    res.json(chats);
     
   } catch (error) {
     console.error('Error in optimized live queue:', error);
@@ -1722,32 +1582,36 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
     }
 
     // Check cache first
-  const cacheKey = `live_queue:${escortId}:${agentId}:v2`;
+    const cacheKey = `live_queue:${escortId}:${agentId}`;
     const cached = cache.get(cacheKey);
     if (cached) {
       console.log(`🚀 Cache HIT: escort live-queue ${escortId} (${Date.now() - startTime}ms)`);
-      return res.json({
-        ...cached,
-        data: attachModerators(cached.data)
-      });
+      return res.json(cached);
     }
     
-    // Verify that the escort exists and is active - agents can access all escorts
+    // First verify that the escort belongs to this agent (cached query)
     const escort = await EscortProfile.findOne({
       _id: escortId,
-      status: 'active'
-    }).select('firstName lastName profileImage profilePicture imageUrl createdBy').lean();
+      $or: [
+        { 'createdBy.id': agentId }, // New format
+        { createdBy: agentId }       // Backward compatibility
+      ]
+    }).select('firstName lastName profileImage profilePicture imageUrl').lean();
     
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found or inactive' });
+      return res.status(404).json({ message: 'Escort profile not found or not authorized' });
     }
     
     // Use aggregation pipeline for better performance
     const chats = await Chat.aggregate([
-      // Stage 1: Match all chats for this escort
+      // Stage 1: Match chats for this escort and agent
       {
         $match: {
-          escortId: new mongoose.Types.ObjectId(escortId)
+          escortId: new mongoose.Types.ObjectId(escortId),
+          $or: [
+            { agentId: agentId },
+            { status: 'new' }
+          ]
         }
       },
       
@@ -1781,8 +1645,7 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
           pipeline: [
             { 
               $project: { 
-                name: 1,
-                agentId: 1
+                name: 1
               } 
             }
           ]
@@ -1827,17 +1690,6 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
           customerId: '$customerId',
           escortId: { $literal: escort },
           agentId: '$agentDetails',
-          assignedAgent: {
-            $cond: [
-              { $ne: ['$agentId', null] },
-              {
-                _id: '$agentId',
-                name: { $ifNull: ['$agentDetails.name', 'Unknown Agent'] },
-                agentId: { $ifNull: ['$agentDetails.agentId', 'Unknown'] }
-              },
-              null
-            ]
-          },
           status: 1,
           messages: 1,
           customerName: 1,
@@ -1851,14 +1703,6 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
           createdAt: 1,
           updatedAt: 1,
           unreadCount: 1,
-          lastActive: {
-            $max: [
-              '$updatedAt',
-              { $ifNull: ['$lastMessage.timestamp', '$updatedAt'] },
-              { $ifNull: ['$lastCustomerResponse', '$updatedAt'] },
-              { $ifNull: ['$lastAgentResponse', '$updatedAt'] }
-            ]
-          },
           isUserActive: { $literal: false }
         }
       },
@@ -1877,7 +1721,7 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
       }
     ]);
 
-    const rawResponse = {
+    const response = {
       success: true,
       data: chats,
       escortProfile: {
@@ -1889,19 +1733,14 @@ router.get('/chats/live-queue/:escortId', agentAuth, async (req, res) => {
     };
 
   // Cache the results for 30 seconds
-  cache.set(cacheKey, rawResponse, 30 * 1000);
+  cache.set(cacheKey, response, 30 * 1000);
     
     const responseTime = Date.now() - startTime;
     if (responseTime > 500) {
       console.log(`⚠️ Slow escort live-queue: ${responseTime}ms`);
     }
 
-    const enrichedResponse = {
-      ...rawResponse,
-      data: attachModerators(chats)
-    };
-
-    res.json(enrichedResponse);
+    res.json(response);
   } catch (error) {
     console.error('Error fetching escort chats:', error);
     res.status(500).json({ 
@@ -1960,18 +1799,7 @@ router.post('/chats/:chatId/panic-room', agentAuth, async (req, res) => {
       clearLiveQueueFallbackCache();
       if (cache && typeof cache.delete === 'function') {
         cache.delete('live_queue:global');
-        cache.delete('live_queue:global:v2');
-        cache.delete('live_queue:global:v3');
         cache.delete('live_queue_updates:all');
-      }
-      if (cache && cache.cache && typeof cache.cache.keys === 'function') {
-        const keysToRemove = [];
-        for (const key of cache.cache.keys()) {
-          if (typeof key === 'string' && key.startsWith('live_queue:')) {
-            keysToRemove.push(key);
-          }
-        }
-        keysToRemove.forEach(k => cache.delete(k));
       }
     } catch (e) {
       console.warn('Live queue cache clear (panic move) warning:', e?.message || e);
@@ -2027,18 +1855,7 @@ router.post('/chats/:chatId/remove-panic-room', agentAuth, async (req, res) => {
       clearLiveQueueFallbackCache();
       if (cache && typeof cache.delete === 'function') {
         cache.delete('live_queue:global');
-        cache.delete('live_queue:global:v2');
-        cache.delete('live_queue:global:v3');
         cache.delete('live_queue_updates:all');
-      }
-      if (cache && cache.cache && typeof cache.cache.keys === 'function') {
-        const keysToRemove = [];
-        for (const key of cache.cache.keys()) {
-          if (typeof key === 'string' && key.startsWith('live_queue:')) {
-            keysToRemove.push(key);
-          }
-        }
-        keysToRemove.forEach(k => cache.delete(k));
       }
     } catch (e) {
       console.warn('Live queue cache clear (panic remove) warning:', e?.message || e);
@@ -2146,7 +1963,7 @@ router.get('/chats/panic-room', agentAuth, async (req, res) => {
 
 // Image management endpoints
 
-// Upload bulk images for escort profiles
+// Upload bulk images for agent's escort profile
 router.post('/images/upload', agentAuth, async (req, res) => {
   try {
     const { images } = req.body; // Array of {filename, imageData, mimeType, size, description, tags, escortProfileId}
@@ -2169,24 +1986,30 @@ router.post('/images/upload', agentAuth, async (req, res) => {
         return res.status(400).json({ message: `Invalid image type for ${imageData.filename}` });
       }
       
-      // Use provided escortProfileId or find the first active escort profile
+      // Use provided escortProfileId or find the first escort profile for the agent
       let escortProfileId = imageData.escortProfileId;
       if (!escortProfileId) {
         const escortProfile = await EscortProfile.findOne({ 
-          status: 'active'
+          $or: [
+            { 'createdBy.id': agentId },  // New format: { id, type }
+            { 'createdBy': agentId }      // Old format: just ObjectId
+          ]
         });
         if (!escortProfile) {
-          return res.status(404).json({ message: 'No active escort profile found. Please create an escort profile first.' });
+          return res.status(404).json({ message: 'Escort profile not found. Please create an escort profile first.' });
         }
         escortProfileId = escortProfile._id;
       } else {
-        // Verify the escort profile exists and is active (agents can access all active profiles)
+        // Verify the escort profile belongs to this agent
         const escortProfile = await EscortProfile.findOne({ 
           _id: escortProfileId,
-          status: 'active'
+          $or: [
+            { 'createdBy.id': agentId },  // New format: { id, type }
+            { 'createdBy': agentId }      // Old format: just ObjectId
+          ]
         });
         if (!escortProfile) {
-          return res.status(404).json({ message: 'Escort profile not found or inactive' });
+          return res.status(403).json({ message: 'Access denied to this escort profile' });
         }
       }
       
@@ -2226,7 +2049,7 @@ router.post('/images/upload', agentAuth, async (req, res) => {
   }
 });
 
-// Get all images for escort profiles
+// Get all images for agent's escort profile
 router.get('/images', agentAuth, async (req, res) => {
   try {
     const agentId = req.agent._id;
@@ -2325,15 +2148,15 @@ router.put('/escorts/:id', agentAuth, async (req, res) => {
     const escortId = req.params.id;
     const agentId = req.agent._id;
     
-    // Check if escort profile exists - agents can update all active escorts
+    // Check if escort profile exists and belongs to the agent
     const existingEscort = await EscortProfile.findOne({
       _id: escortId,
-      status: 'active'
+      'createdBy.id': agentId
     });
     
     if (!existingEscort) {
       return res.status(404).json({ 
-        message: 'Escort profile not found or inactive' 
+        message: 'Escort profile not found or not authorized to update' 
       });
     }
 
@@ -2348,7 +2171,8 @@ router.put('/escorts/:id', agentAuth, async (req, res) => {
     );
 
     // Invalidate relevant caches so all agents see the updated profile
-    cache.delete('all_escorts'); // Clear shared cache for all agents
+    cache.delete(`my_escorts:${agentId}`); // Clear creator's cache
+    cache.delete('all_escorts'); // Clear shared cache
 
     res.json(updatedEscort);
   } catch (error) {
@@ -2370,14 +2194,18 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid escort ID' });
     }
 
-    // Find escort profile - agents can delete all active escorts
+    // Ensure escort belongs to this agent (support both createdBy formats and legacy)
     const escort = await EscortProfile.findOne({
       _id: escortId,
-      status: 'active'
+      $or: [
+        { 'createdBy.id': agentId },
+        { createdBy: agentId },
+        { agentId: agentId }
+      ]
     });
 
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found or inactive' });
+      return res.status(404).json({ message: 'Escort profile not found or not authorized' });
     }
 
     // Soft delete: mark status inactive and track deletion time
@@ -2389,7 +2217,7 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
     // Deactivate related images (best-effort)
     try {
       await AgentImage.updateMany(
-        { escortProfileId: escortId },
+        { escortProfileId: escortId, agentId },
         { $set: { isActive: false } }
       );
     } catch (imgErr) {
@@ -2397,7 +2225,8 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
     }
 
     // Invalidate relevant caches so all agents see the profile removal
-    cache.delete('all_escorts'); // Clear shared cache for all agents
+    cache.delete(`my_escorts:${agentId}`); // Clear creator's cache
+    cache.delete('all_escorts'); // Clear shared cache
 
     return res.json({
       success: true,
@@ -2421,10 +2250,14 @@ router.get('/escorts/:id', agentAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid escort ID' });
     }
 
-    // Allow fetching any active escort profile
+    // Allow fetching if created by this agent (new format or legacy) and active
     const escort = await EscortProfile.findOne({
       _id: escortId,
-      status: 'active'
+      status: 'active',
+      $or: [
+        { 'createdBy.id': req.agent._id },
+        { createdBy: req.agent._id }
+      ]
     }).lean();
 
     if (!escort) {
@@ -2451,14 +2284,18 @@ router.get('/escorts/:id', agentAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid escort ID' });
     }
 
-    // Find escort profile - agents can access all active escorts
+    // Allow access if the agent created the escort (new createdBy format) or legacy agentId match
     const escort = await EscortProfile.findOne({
       _id: escortId,
-      status: 'active'
+      $or: [
+        { 'createdBy.id': agentId },
+        { createdBy: agentId },
+        { agentId: agentId } // legacy field in some documents
+      ]
     }).lean();
 
     if (!escort) {
-      return res.status(404).json({ message: 'Escort profile not found or inactive' });
+      return res.status(404).json({ message: 'Escort profile not found' });
     }
 
     res.json(escort);
@@ -2492,8 +2329,8 @@ router.get('/customers/:customerId', agentAuth, async (req, res) => {
       return res.status(404).json({ message: 'Customer not found' });
     }
 
-    // Get chat history for this customer with any active escorts
-    const escortProfiles = await EscortProfile.find({ status: 'active' });
+    // Get chat history for this customer with any of the agent's escorts
+    const escortProfiles = await EscortProfile.find({ agentId });
     const escortIds = escortProfiles.map(profile => profile._id);
 
     const chatHistory = await Chat.find({
@@ -2546,7 +2383,10 @@ router.get('/agent-customers/:agentId', agentAuth, async (req, res) => {
   try {
     const { agentId } = req.params;
     
-    // Allow all agents to view any agent's assigned customers
+    // Access control - agents can only see their own assigned customers
+    if (!req.admin && req.agent._id.toString() !== agentId) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
     
     const AgentCustomer = require('../models/AgentCustomer');
     
@@ -2582,15 +2422,15 @@ router.get('/customer-chats/:customerId/:agentId', agentAuth, async (req, res) =
     const { customerId, agentId } = req.params;
     console.log(`Looking for existing chats for customer ${customerId} and agent ${agentId}`);
 
-    // Get all active escort profiles
-    const escortProfiles = await EscortProfile.find({ status: 'active' });
+    // Get all escort profiles owned by the agent
+    const escortProfiles = await EscortProfile.find({ agentId });
     const escortIds = escortProfiles.map(profile => profile._id);
     
     if (!escortIds.length) {
-      return res.status(404).json({ message: 'No active escort profiles found' });
+      return res.status(404).json({ message: 'No escort profiles found for this agent' });
     }
 
-    // Find any active chats between this customer and any active escorts
+    // Find any active chats between this customer and any of the agent's escorts
     const existingChat = await Chat.findOne({
       customerId,
       escortId: { $in: escortIds },
@@ -2617,7 +2457,7 @@ router.get('/customer-chats/:customerId/:agentId', agentAuth, async (req, res) =
   }
 });
 
-// Create a new chat between a customer and an available escort
+// Create a new chat between a customer and one of the agent's escorts
 router.post('/create-chat', agentAuth, async (req, res) => {
   try {
     const { customerId, agentId } = req.body;
@@ -2628,37 +2468,25 @@ router.post('/create-chat', agentAuth, async (req, res) => {
 
     console.log(`Creating chat for customer ${customerId} with agent ${agentId}`);
 
-    // Get all active escort profiles
-    const escortProfiles = await EscortProfile.find({ status: 'active' });
+    // Get the agent's escort profiles
+    const escortProfiles = await EscortProfile.find({ agentId });
     
     if (!escortProfiles.length) {
-      return res.status(404).json({ message: 'No active escort profiles found' });
+      return res.status(404).json({ message: 'No escort profiles found for this agent' });
     }
 
     // Use the first available escort profile (in a real system, you might want to use
     // a more sophisticated selection algorithm)
     const escortProfile = escortProfiles[0];
 
-    // Check if customer has an assigned agent
-    const AgentCustomer = require('../models/AgentCustomer');
-    const assignment = await AgentCustomer.findOne({ 
-      customerId: customerId, 
-      status: 'active' 
-    });
-
     // Create a new chat
     const newChat = await Chat.create({
       escortId: escortProfile._id,
       customerId: customerId,
-      agentId: assignment?.agentId || null, // Assign agent if available
       status: 'new',
       messages: [],
       createdAt: new Date()
     });
-
-    if (assignment) {
-      console.log(`New chat ${newChat._id} automatically assigned to agent ${assignment.agentId}`);
-    }
 
     // Populate escort details
     const chat = await Chat.findById(newChat._id)
@@ -2675,94 +2503,6 @@ router.post('/create-chat', agentAuth, async (req, res) => {
   } catch (error) {
     console.error('Chat creation error:', error);
     res.status(500).json({ message: 'Failed to create chat', error: error.message });
-  }
-});
-
-// Get escorts created by a specific agent (for record-keeping and administrative purposes)
-router.get('/escorts-by-creator/:agentId', agentAuth, async (req, res) => {
-  try {
-    const { agentId } = req.params;
-    
-    if (!mongoose.Types.ObjectId.isValid(agentId)) {
-      return res.status(400).json({ message: 'Invalid agent ID' });
-    }
-
-    const escorts = await EscortProfile.find({
-      $or: [
-        { 'createdBy.id': mongoose.Types.ObjectId(agentId) },
-        { 'createdBy': mongoose.Types.ObjectId(agentId) }
-      ],
-      status: 'active'
-    })
-    .select('username firstName gender profileImage country region createdAt stats createdBy')
-    .sort({ createdAt: -1 })
-    .lean();
-
-    res.json({
-      success: true,
-      count: escorts.length,
-      escorts
-    });
-  } catch (error) {
-    console.error('Error fetching escorts by creator:', error);
-    res.status(500).json({ 
-      message: 'Failed to fetch escorts by creator',
-      error: error.message 
-    });
-  }
-});
-
-// Get escort creation statistics by agent (for analytics and record-keeping)
-router.get('/escort-creation-stats', agentAuth, async (req, res) => {
-  try {
-    const stats = await EscortProfile.aggregate([
-      {
-        $match: { status: 'active' }
-      },
-      {
-        $group: {
-          _id: {
-            agentId: '$createdBy.id',
-            agentType: '$createdBy.type'
-          },
-          count: { $sum: 1 },
-          firstCreated: { $min: '$createdAt' },
-          lastCreated: { $max: '$createdAt' }
-        }
-      },
-      {
-        $lookup: {
-          from: 'agents',
-          localField: '_id.agentId',
-          foreignField: '_id',
-          as: 'agentInfo',
-          pipeline: [
-            { $project: { name: 1, agentId: 1 } }
-          ]
-        }
-      },
-      {
-        $addFields: {
-          agentName: { $arrayElemAt: ['$agentInfo.name', 0] },
-          agentCode: { $arrayElemAt: ['$agentInfo.agentId', 0] }
-        }
-      },
-      {
-        $sort: { count: -1 }
-      }
-    ]);
-
-    res.json({
-      success: true,
-      totalAgents: stats.length,
-      stats
-    });
-  } catch (error) {
-    console.error('Error fetching escort creation stats:', error);
-    res.status(500).json({ 
-      message: 'Failed to fetch creation statistics',
-      error: error.message 
-    });
   }
 });
 

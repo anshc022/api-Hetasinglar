@@ -550,26 +550,14 @@ router.post('/start', async (req, res) => {
       });
     }
 
-    // Check if customer has an assigned agent
-    const AgentCustomer = require('../models/AgentCustomer');
-    const assignment = await AgentCustomer.findOne({ 
-      customerId: req.user.id, 
-      status: 'active' 
-    });
-
     // Create new chat if none exists
     const newChat = await Chat.create({
       escortId: req.body.escortId,
       customerId: req.user.id,
-      agentId: assignment?.agentId || null, // Assign agent if available
       status: 'new',
       messages: [],
       createdAt: new Date()
     });
-
-    if (assignment) {
-      console.log(`New chat ${newChat._id} automatically assigned to agent ${assignment.agentId}`);
-    }
 
     // Populate escort details
     const chat = await Chat.findById(newChat._id)
@@ -630,9 +618,8 @@ router.get('/user', async (req, res) => {
           };
         }
         
-        // Optimized message processing (exclude deleted messages for customers)
-        const visibleMessages = (chat.messages || []).filter(msg => msg.isDeleted !== true);
-        const processedMessages = visibleMessages.map(msg => ({
+        // Optimized message processing
+        const processedMessages = chat.messages.map(msg => ({
           text: msg.message,
           time: new Date(msg.timestamp).toLocaleString(),
           isSent: msg.sender === 'customer',
@@ -645,14 +632,13 @@ router.get('/user', async (req, res) => {
           readByAgent: msg.readByAgent,
           readByCustomer: msg.readByCustomer
         }));
-        const lastVisibleMessage = visibleMessages[visibleMessages.length - 1] || null;
         
         acc[escortIdStr].chats.push({
           id: chat._id,
           messages: processedMessages,
           isOnline: true,
-          lastMessage: lastVisibleMessage ? lastVisibleMessage.message : '',
-          time: lastVisibleMessage ? new Date(lastVisibleMessage.timestamp).toLocaleString() : new Date(chat.updatedAt).toLocaleString()
+          lastMessage: chat.messages[chat.messages.length - 1]?.message || '',
+          time: new Date(chat.updatedAt).toLocaleString()
         });
 
         return acc;
@@ -695,12 +681,11 @@ router.get('/user/escort/:escortId', async (req, res) => {
       return res.status(404).json({ message: 'No chat found with this escort' });
     }
 
-    const visibleMessages = (chat.messages || []).filter(msg => msg.isDeleted !== true);
     const formattedChat = {
       id: chat._id,
       sender: chat.escortId?.firstName || 'Escort',
       profileImage: chat.escortId?.profileImage,
-      messages: visibleMessages.map(msg => ({
+      messages: chat.messages.map(msg => ({
         text: msg.message,
         time: new Date(msg.timestamp).toLocaleString(),
         isSent: msg.sender === 'customer',
@@ -714,8 +699,8 @@ router.get('/user/escort/:escortId', async (req, res) => {
         readByCustomer: msg.readByCustomer
       })),
       isOnline: true,
-      lastMessage: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].message : '',
-      time: visibleMessages.length ? new Date(visibleMessages[visibleMessages.length - 1].timestamp).toLocaleString() : new Date(chat.updatedAt).toLocaleString()
+      lastMessage: chat.messages[chat.messages.length - 1]?.message || '',
+      time: new Date(chat.updatedAt).toLocaleString()
     };
 
     res.json(formattedChat);
@@ -2327,14 +2312,6 @@ router.delete('/:chatId/message/:messageIdOrIndex', auth, async (req, res) => {
       deletedMessageIndex: messageIndex,
       sender: messageToDelete.sender
     });
-
-    try {
-      if (cache && typeof cache.delete === 'function' && req.user?.id) {
-        cache.delete(`user:chats:${req.user.id}`);
-      }
-    } catch (cacheError) {
-      console.warn('User chat cache clear (delete message) warning:', cacheError?.message || cacheError);
-    }
     
   } catch (error) {
     console.error('Error deleting message:', error);

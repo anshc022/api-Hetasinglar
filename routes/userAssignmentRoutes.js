@@ -59,15 +59,6 @@ router.post('/assign-user', adminAuth, async (req, res) => {
       }
     );
 
-    // Update all existing chats for this customer to have the new agentId
-    const Chat = require('../models/Chat');
-    const chatUpdateResult = await Chat.updateMany(
-      { customerId: customerId },
-      { $set: { agentId: agentId } }
-    );
-    
-    console.log(`Updated ${chatUpdateResult.modifiedCount} chat(s) with new agent assignment for customer ${customerId}`);
-
     // Update agent's active customers count
     await Agent.findByIdAndUpdate(agentId, {
       $inc: { 'stats.activeCustomers': 1 }
@@ -130,15 +121,6 @@ router.post('/bulk-assign', adminAuth, async (req, res) => {
           req.user.id,
           { assignmentType, priority }
         );
-
-        // Update all existing chats for this customer to have the new agentId
-        const Chat = require('../models/Chat');
-        const chatUpdateResult = await Chat.updateMany(
-          { customerId: customerId },
-          { $set: { agentId: agentId } }
-        );
-        
-        console.log(`Updated ${chatUpdateResult.modifiedCount} chat(s) with new agent assignment for customer ${customerId}`);
 
         assignments.push(assignment);
 
@@ -217,15 +199,6 @@ router.delete('/assignment/:assignmentId', adminAuth, async (req, res) => {
     if (!assignment) {
       return res.status(404).json({ error: 'Assignment not found' });
     }
-
-    // Update all existing chats for this customer to remove the agentId
-    const Chat = require('../models/Chat');
-    const chatUpdateResult = await Chat.updateMany(
-      { customerId: assignment.customerId, agentId: assignment.agentId },
-      { $unset: { agentId: '' } }
-    );
-    
-    console.log(`Removed agent assignment from ${chatUpdateResult.modifiedCount} chat(s) for customer ${assignment.customerId}`);
 
     // Update agent's active customers count
     await Agent.findByIdAndUpdate(assignment.agentId, {
@@ -551,67 +524,6 @@ router.get('/affiliate/overview', adminAuth, async (req, res) => {
   } catch (error) {
     console.error('Error fetching affiliate overview:', error);
     res.status(500).json({ error: 'Failed to fetch affiliate overview' });
-  }
-});
-
-// ======================
-// MIGRATION & FIX ROUTES
-// ======================
-
-// Fix existing chat assignments (run once to fix historical data)
-router.post('/fix-chat-assignments', agentAuth, async (req, res) => {
-  try {
-    // Check if agent is authenticated
-    if (!req.agent && !req.admin) {
-      return res.status(403).json({ error: 'Agent or admin authentication required' });
-    }
-
-    console.log('Starting chat assignment fix...');
-    
-    // Get all active assignments
-    const assignments = await AgentCustomer.find({ status: 'active' });
-    console.log(`Found ${assignments.length} active assignments to process`);
-    
-    const Chat = require('../models/Chat');
-    let totalUpdated = 0;
-    
-    for (const assignment of assignments) {
-      try {
-        // Update all chats for this customer to have the correct agentId
-        const updateResult = await Chat.updateMany(
-          { 
-            customerId: assignment.customerId,
-            // Only update chats that don't have an agentId or have a different agentId
-            $or: [
-              { agentId: { $exists: false } },
-              { agentId: null },
-              { agentId: { $ne: assignment.agentId } }
-            ]
-          },
-          { $set: { agentId: assignment.agentId } }
-        );
-        
-        if (updateResult.modifiedCount > 0) {
-          console.log(`Updated ${updateResult.modifiedCount} chats for customer ${assignment.customerId} -> agent ${assignment.agentId}`);
-          totalUpdated += updateResult.modifiedCount;
-        }
-      } catch (error) {
-        console.error(`Error updating chats for assignment ${assignment._id}:`, error);
-      }
-    }
-    
-    console.log(`Chat assignment fix completed. Total chats updated: ${totalUpdated}`);
-    
-    res.json({
-      success: true,
-      message: `Successfully updated ${totalUpdated} chat assignments`,
-      processedAssignments: assignments.length,
-      updatedChats: totalUpdated
-    });
-
-  } catch (error) {
-    console.error('Error fixing chat assignments:', error);
-    res.status(500).json({ error: 'Failed to fix chat assignments' });
   }
 });
 

@@ -16,15 +16,15 @@ router.get('/health-check', (req, res) => {
   });
 });
 
-// Get logs for an escort
-router.get('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
+// Get logs for a specific chat (escort + customer combination)
+router.get('/chat/:chatId/escort-logs', isAuthenticated, isAgent, async (req, res) => {
   try {
-    const { escortId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(escortId)) {
-      return res.status(400).json({ success: false, message: 'Invalid escort ID format' });
+    const { chatId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return res.status(400).json({ success: false, message: 'Invalid chat ID format' });
     }
 
-    const logs = await EscortLog.find({ escortId }).sort({ createdAt: -1 }).lean();
+    const logs = await EscortLog.find({ chatId }).sort({ createdAt: -1 }).lean();
     
     // Populate agent names for logs
     const Agent = require('../models/Agent');
@@ -48,23 +48,27 @@ router.get('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
   }
 });
 
-// Add a new log for an escort
-router.post('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
+// Add a new log for a specific chat (escort + customer combination)
+router.post('/chat/:chatId/escort-logs', isAuthenticated, isAgent, async (req, res) => {
   try {
-    const { escortId } = req.params;
+    const { chatId } = req.params;
     const { category, content } = req.body;
     const agentId = req.user.id;
 
-    if (!mongoose.Types.ObjectId.isValid(escortId)) {
-      return res.status(400).json({ success: false, message: 'Invalid escort ID format' });
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return res.status(400).json({ success: false, message: 'Invalid chat ID format' });
     }
 
     if (!category || !content) {
       return res.status(400).json({ success: false, message: 'Category and content are required' });
     }
 
-    // Allow log creation even if escort doesn't exist in escorts collection
-    // This handles cases where escorts are deleted but still referenced in chats
+    // Get chat details to extract escortId and customerId
+    const Chat = require('../models/Chat');
+    const chat = await Chat.findById(chatId).select('escortId customerId');
+    if (!chat) {
+      return res.status(404).json({ success: false, message: 'Chat not found' });
+    }
     
     // Get agent information to include name
     const Agent = require('../models/Agent');
@@ -72,7 +76,9 @@ router.post('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
     const agentName = agent ? (agent.name || agent.agentId) : 'Unknown Agent';
     
     const newLog = new EscortLog({
-      escortId,
+      escortId: chat.escortId,
+      chatId: chatId,
+      customerId: chat.customerId,
       category,
       content,
       createdBy: {
@@ -84,9 +90,62 @@ router.post('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
 
     await newLog.save();
     
-    res.status(201).json({ success: true, message: 'Log added successfully', log: newLog });
+    res.status(201).json({ success: true, message: 'Chat-specific log added successfully', log: newLog });
   } catch (error) {
-    console.error('Error adding escort log:', error);
+    console.error('Error adding chat-specific escort log:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Backward compatibility: Get all logs for an escort (across all chats)
+router.get('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
+  try {
+    const { escortId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(escortId)) {
+      return res.status(400).json({ success: false, message: 'Invalid escort ID format' });
+    }
+
+    const logs = await EscortLog.find({ escortId }).sort({ createdAt: -1 }).lean();
+    
+    // Populate agent names and chat info
+    const Agent = require('../models/Agent');
+    const Chat = require('../models/Chat');
+    
+    for (let log of logs) {
+      if (log.createdBy && log.createdBy.id) {
+        try {
+          const agent = await Agent.findById(log.createdBy.id).select('name agentId');
+          if (agent) {
+            log.createdBy.name = agent.name || agent.agentId;
+          }
+        } catch (err) {
+          console.log('Could not find agent for log:', log._id);
+        }
+      }
+      
+      // Add chat context if available
+      if (log.chatId) {
+        try {
+          const chat = await Chat.findById(log.chatId).populate('customerId', 'username');
+          if (chat && chat.customerId) {
+            log.customerInfo = {
+              username: chat.customerId.username,
+              chatId: log.chatId
+            };
+          }
+        } catch (err) {
+          console.log('Could not find chat for log:', log._id);
+        }
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      logs,
+      note: 'These logs span multiple chats. For chat-specific logs, use /chat/:chatId/escort-logs'
+    });
+  } catch (error) {
+    console.error('Error fetching escort logs:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
