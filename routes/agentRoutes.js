@@ -1497,7 +1497,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
               $cond: [
                 { $eq: ['$lastMessage.messageType', 'image'] },
                 '📷 Image',
-                { $substr: [{ $ifNull: ['$lastMessage.message', ''] }, 0, 50] }
+                { $substrCP: [{ $ifNull: ['$lastMessage.message', ''] }, 0, 50] }
               ]
             },
             messageType: '$lastMessage.messageType',
