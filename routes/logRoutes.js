@@ -101,11 +101,28 @@ router.post('/chat/:chatId/escort-logs', isAuthenticated, isAgent, async (req, r
 router.get('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
   try {
     const { escortId } = req.params;
+    const { chatId, customerId } = req.query;
     if (!mongoose.Types.ObjectId.isValid(escortId)) {
       return res.status(400).json({ success: false, message: 'Invalid escort ID format' });
     }
 
-    const logs = await EscortLog.find({ escortId }).sort({ createdAt: -1 }).lean();
+    const filter = { escortId };
+
+    if (chatId) {
+      if (!mongoose.Types.ObjectId.isValid(chatId)) {
+        return res.status(400).json({ success: false, message: 'Invalid chat ID format' });
+      }
+      filter.chatId = chatId;
+    }
+
+    if (customerId) {
+      if (!mongoose.Types.ObjectId.isValid(customerId)) {
+        return res.status(400).json({ success: false, message: 'Invalid customer ID format' });
+      }
+      filter.customerId = customerId;
+    }
+
+    const logs = await EscortLog.find(filter).sort({ createdAt: -1 }).lean();
     
     // Populate agent names and chat info
     const Agent = require('../models/Agent');
@@ -139,11 +156,12 @@ router.get('/escort/:escortId', isAuthenticated, isAgent, async (req, res) => {
       }
     }
     
-    res.json({ 
-      success: true, 
-      logs,
-      note: 'These logs span multiple chats. For chat-specific logs, use /chat/:chatId/escort-logs'
-    });
+    const response = { success: true, logs };
+    if (!chatId) {
+      response.note = 'These logs span multiple chats. For chat-specific logs, provide chatId query or use /chat/:chatId/escort-logs';
+    }
+
+    res.json(response);
   } catch (error) {
     console.error('Error fetching escort logs:', error);
     res.status(500).json({ success: false, message: 'Server error' });

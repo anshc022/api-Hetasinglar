@@ -1471,7 +1471,14 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 6: Attach assigned agent details when available
+        // Stage 6: Normalize lookup results while preserving original ids
+        $addFields: {
+          customerProfile: { $arrayElemAt: ['$customer', 0] },
+          escortProfile: { $arrayElemAt: ['$escort', 0] }
+        }
+      },
+      {
+        // Stage 7: Attach chat-assigned agent details when available
         $lookup: {
           from: 'agents',
           localField: 'agentId',
@@ -1482,7 +1489,7 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
       },
       {
         $addFields: {
-          assignedAgent: {
+          chatAssignedAgent: {
             $let: {
               vars: { agentObj: { $arrayElemAt: ['$agent', 0] } },
               in: {
@@ -1508,11 +1515,71 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 7: Final projection - essential data only
+        // Stage 8: Fetch latest active assignment for the customer as fallback
+        $lookup: {
+          from: 'agentcustomers',
+          let: { customerObjId: '$customerId' },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$customerId', '$$customerObjId'] },
+                    { $eq: ['$status', 'active'] }
+                  ]
+                }
+              }
+            },
+            { $sort: { updatedAt: -1, assignedDate: -1, createdAt: -1 } },
+            { $limit: 1 },
+            {
+              $lookup: {
+                from: 'agents',
+                localField: 'agentId',
+                foreignField: '_id',
+                as: 'assignmentAgent',
+                pipeline: [{ $project: { name: 1, agentId: 1 } }]
+              }
+            },
+            {
+              $addFields: {
+                assignmentAgent: { $arrayElemAt: ['$assignmentAgent', 0] }
+              }
+            }
+          ],
+          as: 'customerAssignment'
+        }
+      },
+      {
+        $addFields: {
+          assignmentAgent: { $arrayElemAt: ['$customerAssignment.assignmentAgent', 0] },
+          assignedAgent: {
+            $cond: [
+              { $ifNull: ['$chatAssignedAgent', false] },
+              '$chatAssignedAgent',
+              { $arrayElemAt: ['$customerAssignment.assignmentAgent', 0] }
+            ]
+          },
+          agentId: {
+            $cond: [
+              { $and: [
+                { $not: [{ $ifNull: ['$chatAssignedAgent', false] }] },
+                { $ifNull: ['$assignmentAgent._id', false] }
+              ] },
+              '$assignmentAgent._id',
+              '$agentId'
+            ]
+          }
+        }
+      },
+      {
+        // Stage 9: Final projection - essential data only
         $project: {
           _id: 1,
-          customerId: { $arrayElemAt: ['$customer', 0] },
-          escortId: { $arrayElemAt: ['$escort', 0] },
+          customerId: 1,
+          customerProfile: '$customerProfile',
+          escortId: 1,
+          escortProfile: '$escortProfile',
           agentId: 1,
           assignedAgent: 1,
           status: 1,
@@ -1547,11 +1614,11 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 8: Efficient sort
+        // Stage 10: Efficient sort
         $sort: { priority: -1, updatedAt: -1 }
       },
       {
-        // Stage 9: Performance limit
+        // Stage 11: Performance limit
         $limit: 25
       }
     ]);
