@@ -259,6 +259,12 @@ router.get('/escorts/active', async (req, res) => {
     let totalsMeta = null;
     let cached = false;
     
+    // Optimized field selection based on actual frontend usage
+    const essentialFields = '_id username firstName profileImage profilePicture imageUrl country region status createdAt';
+    // UI-focused full selection - only fields actually used by frontend
+    const uiOptimizedFields = essentialFields + ' interests profession';
+    const useFull = (req.query.full === 'true');
+    
     if (!profiles) {
       performanceMonitor.recordPhase(requestId, 'cache-miss', { cacheKey });
       // Cache miss - fetching from database
@@ -268,11 +274,6 @@ router.get('/escorts/active', async (req, res) => {
         profiles = await inflightFetches.get(cacheKey);
       } else {
         const fetchPromise = (async () => {
-          // Optimized field selection based on actual frontend usage
-          const essentialFields = '_id username firstName profileImage profilePicture imageUrl country region status createdAt';
-          // UI-focused full selection - only fields actually used by frontend
-          const uiOptimizedFields = essentialFields + ' interests profession';
-          const useFull = (req.query.full === 'true');
 
           let query = EscortProfile.find(filter)
             .select(useFull ? uiOptimizedFields : essentialFields)
