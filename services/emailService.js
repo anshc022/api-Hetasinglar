@@ -17,7 +17,7 @@ if (!emailUser || !emailPass) {
   console.error('Email configuration error: EMAIL_USER or EMAIL_PASS is missing.');
 }
 
-const transporter = nodemailer.createTransporter({
+const transporter = nodemailer.createTransport({
   host: smtpHost,
   port: smtpPort,
   secure: smtpSecure, // true for 465, false for other ports
