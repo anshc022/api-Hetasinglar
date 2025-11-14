@@ -196,7 +196,7 @@ const testEmailConnection = async () => {
       host: smtpHost,
       port: smtpPort,
       secure: smtpSecure,
-      authMethod: smtpAuthMethod
+      user: emailUser
     });
     return false;
   }

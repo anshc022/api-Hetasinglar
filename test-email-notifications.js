@@ -2,8 +2,12 @@ const emailService = require('./services/emailService');
 const User = require('./models/User');
 const mongoose = require('mongoose');
 
-// Load environment variables
-require('dotenv').config();
+// Load environment variables - load production env if NODE_ENV is production
+if (process.env.NODE_ENV === 'production') {
+  require('dotenv').config({ path: '.env.production' });
+} else {
+  require('dotenv').config();
+}
 
 // Connect to database
 mongoose.connect(process.env.MONGODB_URI, {
