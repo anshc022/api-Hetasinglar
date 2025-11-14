@@ -1471,12 +1471,50 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 6: Final projection - essential data only
+        // Stage 6: Attach assigned agent details when available
+        $lookup: {
+          from: 'agents',
+          localField: 'agentId',
+          foreignField: '_id',
+          as: 'agent',
+          pipeline: [{ $project: { name: 1, agentId: 1 } }]
+        }
+      },
+      {
+        $addFields: {
+          assignedAgent: {
+            $let: {
+              vars: { agentObj: { $arrayElemAt: ['$agent', 0] } },
+              in: {
+                $cond: [
+                  { $ifNull: ['$$agentObj', false] },
+                  {
+                    _id: '$$agentObj._id',
+                    name: '$$agentObj.name',
+                    agentId: '$$agentObj.agentId'
+                  },
+                  null
+                ]
+              }
+            }
+          },
+          agentId: {
+            $cond: [
+              { $gt: [{ $size: '$agent' }, 0] },
+              { $arrayElemAt: ['$agent._id', 0] },
+              '$agentId'
+            ]
+          }
+        }
+      },
+      {
+        // Stage 7: Final projection - essential data only
         $project: {
           _id: 1,
           customerId: { $arrayElemAt: ['$customer', 0] },
           escortId: { $arrayElemAt: ['$escort', 0] },
           agentId: 1,
+          assignedAgent: 1,
           status: 1,
           customerName: 1,
           isInPanicRoom: 1,
@@ -1509,11 +1547,11 @@ router.get('/chats/live-queue', agentAuth, async (req, res) => {
         }
       },
       {
-        // Stage 7: Efficient sort
+        // Stage 8: Efficient sort
         $sort: { priority: -1, updatedAt: -1 }
       },
       {
-        // Stage 8: Performance limit
+        // Stage 9: Performance limit
         $limit: 25
       }
     ]);
