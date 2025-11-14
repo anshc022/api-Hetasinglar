@@ -1,5 +1,16 @@
 const mongoose = require('mongoose');
 
+const PRESET_ESCORT_LOG_CATEGORIES = [
+  'City',
+  'Job',
+  'Family',
+  'Money',
+  'Relationship',
+  'Health',
+  'Travel',
+  'Other'
+];
+
 const escortLogSchema = new mongoose.Schema({
   escortId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -18,8 +29,29 @@ const escortLogSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    enum: ['City', 'Job', 'Family', 'Money', 'Relationship', 'Health', 'Travel', 'Other'],
-    required: true
+    required: true,
+    trim: true,
+    maxlength: 100,
+    set: value => (typeof value === 'string' ? value.trim() : value),
+    validate: {
+      validator(value) {
+        return Boolean(value && value.trim().length);
+      },
+      message: 'Category is required'
+    }
+  },
+  categoryPreset: {
+    type: String,
+    enum: PRESET_ESCORT_LOG_CATEGORIES,
+    default: function () {
+      return PRESET_ESCORT_LOG_CATEGORIES.includes(this.category) ? this.category : undefined;
+    }
+  },
+  isCustomCategory: {
+    type: Boolean,
+    default: function () {
+      return !PRESET_ESCORT_LOG_CATEGORIES.includes(this.category);
+    }
   },
   content: {
     type: String,
@@ -49,6 +81,22 @@ const escortLogSchema = new mongoose.Schema({
 // Update timestamp on document save
 escortLogSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
+
+  if (typeof this.category === 'string') {
+    this.category = this.category.trim();
+  }
+
+  if (!this.category) {
+    return next(new Error('Category is required'));
+  }
+
+  if (PRESET_ESCORT_LOG_CATEGORIES.includes(this.category)) {
+    this.categoryPreset = this.category;
+    this.isCustomCategory = false;
+  } else {
+    this.categoryPreset = undefined;
+    this.isCustomCategory = true;
+  }
   
   // Check if escortId and createdBy.id are valid ObjectIds
   try {
@@ -83,6 +131,7 @@ escortLogSchema.statics.validateEscortId = async function(escortId) {
     };
   }
 };
+
 
 const EscortLog = mongoose.model('EscortLog', escortLogSchema);
 
