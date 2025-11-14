@@ -64,7 +64,7 @@ function clearLiveQueueFallbackCache() {
     if (liveQueueCache && liveQueueCache.size) {
       liveQueueCache.clear();
     }
-    console.log('🗑️  FALLBACK live-queue cache cleared');
+    // Live-queue cache cleared
   } catch (e) {
     console.warn('FALLBACK cache clear error:', e?.message || e);
   }
@@ -261,7 +261,7 @@ router.get('/escorts/active', async (req, res) => {
     
     if (!profiles) {
       performanceMonitor.recordPhase(requestId, 'cache-miss', { cacheKey });
-      console.log(`[${requestId}] Cache miss - fetching escorts from database for key ${cacheKey}`);
+      // Cache miss - fetching from database
 
       // De-duplicate concurrent fetches per cacheKey
       if (inflightFetches.has(cacheKey)) {
@@ -280,9 +280,9 @@ router.get('/escorts/active', async (req, res) => {
             .lean();
 
           if (useFull) {
-            console.log('[escorts/active] Using UI-OPTIMIZED projection (only fields used by frontend)');
+            // Using UI-OPTIMIZED projection
           } else {
-            console.log('[escorts/active] Using ESSENTIAL projection (core fields only)');
+            // Using ESSENTIAL projection
           }
 
           // Optimized index hints for better query performance
@@ -311,7 +311,7 @@ router.get('/escorts/active', async (req, res) => {
             // CRITICAL: Prevent massive data fetches - limit to 100 records max
             const maxRecords = useFull ? 50 : 100; // Lower limit for full queries
             query = query.limit(maxRecords);
-            console.log(`[escorts/active] Applied safety limit: ${maxRecords} records`);
+            // Applied safety limit
           }
           const result = await query.exec();
           return result;
@@ -360,11 +360,11 @@ router.get('/escorts/active', async (req, res) => {
         resultCount: profiles.length,
         ttl: ttl/1000
       });
-      console.log(`[${requestId}] Cached ${profiles.length} escort profiles (TTL ${ttl/1000}s)`);
+      // Profiles cached
     } else {
       cached = true;
       performanceMonitor.recordPhase(requestId, 'cache-hit', { cacheKey });
-      console.log(`[${requestId}] Cache hit - returning ${Array.isArray(profiles) ? profiles.length : 0} escort profiles`);
+      // Cache hit - returning profiles
     }
     // Choose response shape (default array for backward compatibility)
     const responseBody = format === 'v2'
@@ -411,9 +411,7 @@ router.post('/', async (req, res) => {
   try {
     const { agentId, name, email, password, role, permissions } = req.body;
 
-    console.log('=== AGENT CREATION DEBUG ===');
-    console.log('Request body:', req.body);
-    console.log('Extracted fields:', { agentId, name, email, password, role, permissions });
+    // Agent creation
 
     // Check if agent already exists
     const queryConditions = [{ agentId }];
