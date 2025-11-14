@@ -17,7 +17,7 @@ if (!emailUser || !emailPass) {
   console.error('Email configuration error: EMAIL_USER or EMAIL_PASS is missing.');
 }
 
-const transporter = nodemailer.createTransport({
+const transporter = nodemailer.createTransporter({
   host: smtpHost,
   port: smtpPort,
   secure: smtpSecure, // true for 465, false for other ports
@@ -25,18 +25,24 @@ const transporter = nodemailer.createTransport({
     user: emailUser,
     pass: emailPass
   },
-  // Connection settings for better reliability
-  connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 15000,
-  greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 15000,
-  socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 20000,
-  // TLS settings
+  // Connection settings for better reliability with Loopia
+  connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 30000,
+  greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 30000,
+  socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 30000,
+  // Enhanced TLS settings for Loopia mailcluster
   tls: {
     minVersion: 'TLSv1.2',
-    servername: smtpHost
+    servername: smtpHost,
+    ciphers: 'HIGH:MEDIUM:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA',
+    rejectUnauthorized: false // For Loopia compatibility
   },
+  // Disable pool to avoid connection issues
+  pool: false,
+  // Authentication method
+  authMethod: 'PLAIN',
   // Debug for troubleshooting
-  debug: process.env.SMTP_DEBUG?.toLowerCase?.() === 'true',
-  logger: process.env.SMTP_DEBUG?.toLowerCase?.() === 'true'
+  debug: process.env.SMTP_DEBUG?.toLowerCase?.() === 'true' || process.env.NODE_ENV === 'development',
+  logger: process.env.SMTP_DEBUG?.toLowerCase?.() === 'true' || process.env.NODE_ENV === 'development'
 });
 
 // OTP functionality deprecated: generateOTP, verification token, and sendOTPEmail removed.
