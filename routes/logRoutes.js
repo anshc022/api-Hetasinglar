@@ -7,6 +7,41 @@ const Escort = require('../models/Escort');
 const User = require('../models/User');
 const { isAuthenticated, isAgent, isAdmin } = require('../auth');
 
+// Resolve the agent display name once when log metadata is missing
+const resolveAgentDisplayName = async (agentId) => {
+  try {
+    const Agent = require('../models/Agent');
+    const agent = await Agent.findById(agentId).select('name agentId');
+    if (agent) {
+      return agent.name || agent.agentId || 'Agent';
+    }
+  } catch (error) {
+    console.warn('Failed to resolve agent name for log metadata:', error?.message || error);
+  }
+  return 'Agent';
+};
+
+const ensureLogCreatorMetadata = async (log, fallbackAgentId) => {
+  if (!log) {
+    return;
+  }
+
+  const hasCreatedBy = Boolean(log.createdBy);
+  const creatorId = hasCreatedBy && log.createdBy.id ? log.createdBy.id : null;
+  const creatorType = hasCreatedBy && log.createdBy.type ? log.createdBy.type : null;
+  const creatorName = hasCreatedBy && log.createdBy.name ? log.createdBy.name : null;
+
+  const resolvedId = creatorId || fallbackAgentId;
+  const resolvedType = creatorType || 'Agent';
+  const resolvedName = creatorName || await resolveAgentDisplayName(resolvedId);
+
+  log.createdBy = {
+    id: resolvedId,
+    type: resolvedType,
+    name: resolvedName
+  };
+};
+
 // Health check endpoint
 router.get('/health-check', (req, res) => {
   res.json({
@@ -59,7 +94,10 @@ router.post('/chat/:chatId/escort-logs', isAuthenticated, isAgent, async (req, r
       return res.status(400).json({ success: false, message: 'Invalid chat ID format' });
     }
 
-    if (!category || !content) {
+    const sanitizedCategory = typeof category === 'string' ? category.trim() : '';
+    const sanitizedContent = typeof content === 'string' ? content.trim() : '';
+
+    if (!sanitizedCategory || !sanitizedContent) {
       return res.status(400).json({ success: false, message: 'Category and content are required' });
     }
 
@@ -79,8 +117,8 @@ router.post('/chat/:chatId/escort-logs', isAuthenticated, isAgent, async (req, r
       escortId: chat.escortId,
       chatId: chatId,
       customerId: chat.customerId,
-      category,
-      content,
+      category: sanitizedCategory,
+      content: sanitizedContent,
       createdBy: {
         id: agentId,
         type: 'Agent',
@@ -179,29 +217,35 @@ router.put('/escort/:logId', isAuthenticated, isAgent, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid log ID format' });
     }
 
-    if (!category || !content) {
+    const sanitizedCategory = typeof category === 'string' ? category.trim() : '';
+    const sanitizedContent = typeof content === 'string' ? content.trim() : '';
+
+    if (!sanitizedCategory || !sanitizedContent) {
       return res.status(400).json({ success: false, message: 'Category and content are required' });
     }
 
     // Find the log and verify it belongs to the agent
     const log = await EscortLog.findById(logId);
-    
+
     if (!log) {
       return res.status(404).json({ success: false, message: 'Log not found' });
     }
 
     // Check if the agent is the one who created the log
-    if (log.createdBy.id.toString() !== agentId.toString()) {
+    const logCreatorId = log?.createdBy?.id ? log.createdBy.id.toString() : null;
+    if (logCreatorId && logCreatorId !== agentId.toString()) {
       return res.status(403).json({ success: false, message: 'You can only edit your own logs' });
     }
 
+    await ensureLogCreatorMetadata(log, agentId);
+
     // Update the log
-    log.category = category;
-    log.content = content;
+    log.category = sanitizedCategory;
+    log.content = sanitizedContent;
     log.updatedAt = new Date();
-    
+
     await log.save();
-    
+
     res.json({ success: true, message: 'Log updated successfully', log });
   } catch (error) {
     console.error('Error updating escort log:', error);
@@ -252,7 +296,10 @@ router.post('/user/:userId', isAuthenticated, isAgent, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid user ID format' });
     }
 
-    if (!category || !content) {
+    const sanitizedCategory = typeof category === 'string' ? category.trim() : '';
+    const sanitizedContent = typeof content === 'string' ? content.trim() : '';
+
+    if (!sanitizedCategory || !sanitizedContent) {
       return res.status(400).json({ success: false, message: 'Category and content are required' });
     }
 
@@ -268,8 +315,8 @@ router.post('/user/:userId', isAuthenticated, isAgent, async (req, res) => {
 
     const newLog = new UserLog({
       userId,
-      category,
-      content,
+      category: sanitizedCategory,
+      content: sanitizedContent,
       createdBy: {
         id: agentId,
         type: 'Agent',
@@ -296,29 +343,35 @@ router.put('/user/:logId', isAuthenticated, isAgent, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid log ID format' });
     }
 
-    if (!category || !content) {
+    const sanitizedCategory = typeof category === 'string' ? category.trim() : '';
+    const sanitizedContent = typeof content === 'string' ? content.trim() : '';
+
+    if (!sanitizedCategory || !sanitizedContent) {
       return res.status(400).json({ success: false, message: 'Category and content are required' });
     }
 
     // Find the log and verify it belongs to the agent
     const log = await UserLog.findById(logId);
-    
+
     if (!log) {
       return res.status(404).json({ success: false, message: 'Log not found' });
     }
 
     // Check if the agent is the one who created the log
-    if (log.createdBy.id.toString() !== agentId.toString()) {
+    const logCreatorId = log?.createdBy?.id ? log.createdBy.id.toString() : null;
+    if (logCreatorId && logCreatorId !== agentId.toString()) {
       return res.status(403).json({ success: false, message: 'You can only edit your own logs' });
     }
 
+    await ensureLogCreatorMetadata(log, agentId);
+
     // Update the log
-    log.category = category;
-    log.content = content;
+    log.category = sanitizedCategory;
+    log.content = sanitizedContent;
     log.updatedAt = new Date();
-    
+
     await log.save();
-    
+
     res.json({ success: true, message: 'Log updated successfully', log });
   } catch (error) {
     console.error('Error updating user log:', error);
@@ -338,18 +391,19 @@ router.delete('/escort/:logId', isAuthenticated, isAgent, async (req, res) => {
 
     // Find the log and verify it belongs to the agent
     const log = await EscortLog.findById(logId);
-    
+
     if (!log) {
       return res.status(404).json({ success: false, message: 'Log not found' });
     }
 
     // Check if the agent is the one who created the log
-    if (log.createdBy.id.toString() !== agentId.toString()) {
+    const logCreatorId = log?.createdBy?.id ? log.createdBy.id.toString() : null;
+    if (logCreatorId && logCreatorId !== agentId.toString()) {
       return res.status(403).json({ success: false, message: 'You can only delete your own logs' });
     }
 
     await EscortLog.findByIdAndDelete(logId);
-    
+
     res.json({ success: true, message: 'Log deleted successfully' });
   } catch (error) {
     console.error('Error deleting escort log:', error);
@@ -369,18 +423,19 @@ router.delete('/user/:logId', isAuthenticated, isAgent, async (req, res) => {
 
     // Find the log and verify it belongs to the agent
     const log = await UserLog.findById(logId);
-    
+
     if (!log) {
       return res.status(404).json({ success: false, message: 'Log not found' });
     }
 
     // Check if the agent is the one who created the log
-    if (log.createdBy.id.toString() !== agentId.toString()) {
+    const logCreatorId = log?.createdBy?.id ? log.createdBy.id.toString() : null;
+    if (logCreatorId && logCreatorId !== agentId.toString()) {
       return res.status(403).json({ success: false, message: 'You can only delete your own logs' });
     }
 
     await UserLog.findByIdAndDelete(logId);
-    
+
     res.json({ success: true, message: 'Log deleted successfully' });
   } catch (error) {
     console.error('Error deleting user log:', error);
