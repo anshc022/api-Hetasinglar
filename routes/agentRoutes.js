@@ -2570,20 +2570,199 @@ router.get('/agent-customers/:agentId', agentAuth, async (req, res) => {
     
     // Find all customers assigned to this agent
     const agentCustomers = await AgentCustomer.find({ agentId })
-      .populate('customerId', 'username email profileImage lastActive isActive')
-      .sort({ lastActive: -1 })
+      .populate('customerId', 'username email profileImage lastActiveDate status createdAt')
+      .sort({ lastActiveDate: -1, updatedAt: -1 })
       .lean();
-      
+
+    const activeUsersMap = ActiveUsersService.getActiveUsers();
+
+    const customerIdStrings = Array.from(new Set(
+      agentCustomers
+        .map(customer => customer?.customerId?._id || customer?.customerId)
+        .filter(Boolean)
+        .map(id => id.toString())
+    ));
+
+    let chatSummariesMap = new Map();
+
+    if (customerIdStrings.length) {
+      const escortProfiles = await EscortProfile.find({ agentId })
+        .select('_id')
+        .lean();
+
+      const escortIdStrings = escortProfiles.map(doc => doc._id.toString());
+
+      const customerObjectIds = customerIdStrings
+        .filter(id => mongoose.Types.ObjectId.isValid(id))
+        .map(id => new mongoose.Types.ObjectId(id));
+
+      if (customerObjectIds.length) {
+        const matchStage = {
+          customerId: {
+            $in: customerObjectIds
+          }
+        };
+
+        if (escortIdStrings.length) {
+          const escortObjectIds = escortIdStrings
+            .filter(id => mongoose.Types.ObjectId.isValid(id))
+            .map(id => new mongoose.Types.ObjectId(id));
+          if (escortObjectIds.length) {
+            matchStage.escortId = {
+              $in: escortObjectIds
+            };
+          }
+        }
+
+        const chatSummaries = await Chat.aggregate([
+        { $match: matchStage },
+        { $sort: { updatedAt: -1 } },
+        {
+          $project: {
+            customerId: 1,
+            status: 1,
+            updatedAt: 1,
+            createdAt: 1,
+            lastCustomerResponse: 1,
+            lastAgentResponse: 1,
+            lastMessage: {
+              $let: {
+                vars: { msgCount: { $size: '$messages' } },
+                in: {
+                  $cond: [
+                    { $gt: ['$$msgCount', 0] },
+                    {
+                      $arrayElemAt: [
+                        '$messages',
+                        { $subtract: ['$$msgCount', 1] }
+                      ]
+                    },
+                    null
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            customerId: 1,
+            status: 1,
+            lastInteraction: {
+              $ifNull: [
+                '$lastMessage.timestamp',
+                {
+                  $ifNull: [
+                    '$lastCustomerResponse',
+                    {
+                      $ifNull: [
+                        '$lastAgentResponse',
+                        { $ifNull: ['$updatedAt', '$createdAt'] }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            lastMessage: {
+              sender: '$lastMessage.sender',
+              messageType: '$lastMessage.messageType',
+              message: '$lastMessage.message'
+            }
+          }
+        },
+        {
+          $group: {
+            _id: '$customerId',
+            lastInteraction: { $first: '$lastInteraction' },
+            lastMessage: { $first: '$lastMessage' },
+            chatStatus: { $first: '$status' }
+          }
+        }
+        ]);
+
+        chatSummariesMap = new Map(
+          chatSummaries.map(summary => [
+            summary._id?.toString(),
+            {
+              lastInteraction: summary.lastInteraction ? new Date(summary.lastInteraction) : null,
+              lastMessage: summary.lastMessage || null,
+              chatStatus: summary.chatStatus || null
+            }
+          ])
+        );
+      }
+    }
+
     // Format the response
     const customers = agentCustomers.map(customer => {
+      const user = customer.customerId || {};
+      const userId = user?._id ? user._id.toString() : null;
+      const chatSummary = userId ? chatSummariesMap.get(userId) : null;
+      const livePresenceDate = userId && activeUsersMap ? activeUsersMap.get(userId) : null;
+      const liveOnline = !!livePresenceDate;
+      const userStatus = (user.status || '').toLowerCase();
+      const relationshipStatus = (customer.status || '').toLowerCase();
+      const normalizedChatStatus = (chatSummary?.chatStatus || '').toLowerCase();
+
+      const registrationDate = customer.registrationDate
+        || customer.assignedDate
+        || user.createdAt
+        || null;
+
+      const lastActivityFallback = customer.lastActivity
+        || customer.lastActiveDate
+        || customer.stats?.lastChatDate
+        || user.lastActiveDate
+        || customer.updatedAt
+        || user.createdAt
+        || null;
+
+      const lastInteractionFromChat = chatSummary?.lastInteraction || null;
+      const resolvedLastActivity = livePresenceDate || lastInteractionFromChat || lastActivityFallback;
+      const finalLastActivity = resolvedLastActivity && !Number.isNaN(new Date(resolvedLastActivity).getTime())
+        ? new Date(resolvedLastActivity)
+        : null;
+
+      const hardStatuses = new Set(['banned', 'suspended']);
+      let resolvedStatus = (userStatus || relationshipStatus || 'inactive');
+
+      if (!hardStatuses.has(resolvedStatus)) {
+        if (normalizedChatStatus) {
+          resolvedStatus = normalizedChatStatus === 'closed' ? 'inactive' : 'active';
+        }
+        if (liveOnline) {
+          resolvedStatus = 'active';
+        }
+      }
+
+      const isActive = !hardStatuses.has(resolvedStatus) && resolvedStatus === 'active';
+
+      const customerPayload = {
+        ...user,
+        lastActive: finalLastActivity || user.lastActiveDate || user.lastActive || lastActivityFallback,
+        isActive,
+        isOnline: liveOnline
+      };
+
+      if (chatSummary?.lastMessage) {
+        customerPayload.lastMessage = chatSummary.lastMessage;
+        customerPayload.lastMessagePreview = chatSummary.lastMessage?.messageType === 'image'
+          ? '📷 Image'
+          : chatSummary.lastMessage?.message;
+      }
+
       return {
         _id: customer._id,
-        customerId: customer.customerId,
-        registrationDate: customer.registrationDate,
-        lastActivity: customer.customerId?.lastActive || customer.lastActivity,
-        isActive: customer.customerId?.isActive || false,
-        totalChats: customer.totalChats || 0,
-        totalEarnings: customer.totalEarnings || 0
+        customerId: customerPayload,
+        registrationDate,
+        lastActivity: finalLastActivity,
+        isActive,
+        status: resolvedStatus,
+        chatStatus: chatSummary?.chatStatus || null,
+        lastMessage: chatSummary?.lastMessage || null,
+        totalChats: customer.stats?.totalChats || customer.totalChats || 0,
+        totalEarnings: customer.stats?.totalEarnings || customer.totalEarnings || 0
       };
     });
 

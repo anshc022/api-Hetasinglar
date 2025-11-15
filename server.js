@@ -514,7 +514,7 @@ wss.on('connection', (ws) => {
       // Handle user activity updates
       if (data.type === 'user_activity') {
         if (data.userId && ws.clientInfo?.role !== 'agent') {
-          ActiveUsersService.setUserActive(data.userId);
+          ActiveUsersService.setUserActive(data.userId, data.timestamp);
           
           // Optional: Broadcast activity to agents for live presence updates
           const activityUpdate = {
