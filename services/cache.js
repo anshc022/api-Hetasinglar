@@ -11,6 +11,7 @@ class CacheService {
       misses: 0,
       sets: 0
     };
+    this.debug = process.env.CACHE_DEBUG === 'true';
   }
 
   /**
@@ -39,7 +40,9 @@ class CacheService {
     this.timers.set(key, timer);
     this.stats.sets++;
 
-    console.log(`🗄️  Cached: ${key} (TTL: ${ttl}ms)`);
+    if (this.debug) {
+      console.log(`🗄️  Cached: ${key} (TTL: ${ttl}ms)`);
+    }
   }
 
   /**
@@ -51,12 +54,16 @@ class CacheService {
     if (this.cache.has(key)) {
       this.stats.hits++;
       const cached = this.cache.get(key);
-      console.log(`✅ Cache hit: ${key} (age: ${Date.now() - cached.timestamp}ms)`);
+      if (this.debug) {
+        console.log(`✅ Cache hit: ${key} (age: ${Date.now() - cached.timestamp}ms)`);
+      }
       return cached.value;
     }
 
     this.stats.misses++;
-    console.log(`❌ Cache miss: ${key}`);
+    if (this.debug) {
+      console.log(`❌ Cache miss: ${key}`);
+    }
     return null;
   }
 
@@ -70,7 +77,26 @@ class CacheService {
       clearTimeout(this.timers.get(key));
       this.timers.delete(key);
     }
-    console.log(`🗑️  Cache deleted: ${key}`);
+    if (this.debug) {
+      console.log(`🗑️  Cache deleted: ${key}`);
+    }
+  }
+
+  /**
+   * Delete all cache keys that start with the provided prefix
+   * @param {string} prefix - Prefix to match
+   */
+  deleteByPrefix(prefix) {
+    if (!prefix) {
+      return;
+    }
+
+    const keys = Array.from(this.cache.keys());
+    for (const key of keys) {
+      if (key.startsWith(prefix)) {
+        this.delete(key);
+      }
+    }
   }
 
   /**
@@ -80,7 +106,9 @@ class CacheService {
     this.cache.clear();
     this.timers.forEach(timer => clearTimeout(timer));
     this.timers.clear();
-    console.log('🧹 Cache cleared');
+    if (this.debug) {
+      console.log('🧹 Cache cleared');
+    }
   }
 
   /**

@@ -534,18 +534,33 @@ router.post('/start', async (req, res) => {
 
     if (existingChat) {
       // Return existing chat
+      const visibleMessages = existingChat.messages.filter(msg => !msg.isDeleted);
+      const formattedMessages = visibleMessages.map(msg => ({
+        text: msg.message,
+        time: new Date(msg.timestamp).toLocaleString(),
+        isSent: msg.sender === 'customer',
+        status: msg.readByAgent ? 'read' : 'sent',
+        sender: msg.sender,
+        messageType: msg.messageType || 'text',
+        imageData: msg.imageData,
+        mimeType: msg.mimeType,
+        filename: msg.filename,
+        readByAgent: msg.readByAgent,
+        readByCustomer: msg.readByCustomer
+      }));
+
+      const lastVisible = visibleMessages[visibleMessages.length - 1] || null;
+      const lastMessagePreview = lastVisible
+        ? (lastVisible.messageType === 'image' ? '📷 Image' : (lastVisible.message || ''))
+        : '';
+
       return res.json({
         id: existingChat._id,
         sender: existingChat.escortId?.firstName || 'Escort',
         profileImage: existingChat.escortId?.profileImage,
-        messages: existingChat.messages.map(msg => ({
-          text: msg.message,
-          time: new Date(msg.timestamp).toLocaleString(),
-          isSent: msg.sender === 'customer',
-          status: msg.readByAgent ? 'read' : 'sent'
-        })),
+        messages: formattedMessages,
         isOnline: true,
-        lastMessage: existingChat.messages[existingChat.messages.length - 1]?.message || '',
+        lastMessage: lastMessagePreview,
         time: existingChat.updatedAt.toLocaleString()
       });
     }
@@ -618,8 +633,9 @@ router.get('/user', async (req, res) => {
           };
         }
         
-        // Optimized message processing
-        const processedMessages = chat.messages.map(msg => ({
+        // Optimized message processing (hide deleted messages from customers)
+        const visibleMessages = (chat.messages || []).filter(msg => !msg.isDeleted);
+        const processedMessages = visibleMessages.map(msg => ({
           text: msg.message,
           time: new Date(msg.timestamp).toLocaleString(),
           isSent: msg.sender === 'customer',
@@ -632,12 +648,17 @@ router.get('/user', async (req, res) => {
           readByAgent: msg.readByAgent,
           readByCustomer: msg.readByCustomer
         }));
+
+        const lastVisible = visibleMessages[visibleMessages.length - 1] || null;
+        const lastMessagePreview = lastVisible
+          ? (lastVisible.messageType === 'image' ? '📷 Image' : (lastVisible.message || ''))
+          : '';
         
         acc[escortIdStr].chats.push({
           id: chat._id,
           messages: processedMessages,
           isOnline: true,
-          lastMessage: chat.messages[chat.messages.length - 1]?.message || '',
+          lastMessage: lastMessagePreview,
           time: new Date(chat.updatedAt).toLocaleString()
         });
 
@@ -681,11 +702,12 @@ router.get('/user/escort/:escortId', async (req, res) => {
       return res.status(404).json({ message: 'No chat found with this escort' });
     }
 
+    const visibleMessages = (chat.messages || []).filter(msg => !msg.isDeleted);
     const formattedChat = {
       id: chat._id,
       sender: chat.escortId?.firstName || 'Escort',
       profileImage: chat.escortId?.profileImage,
-      messages: chat.messages.map(msg => ({
+      messages: visibleMessages.map(msg => ({
         text: msg.message,
         time: new Date(msg.timestamp).toLocaleString(),
         isSent: msg.sender === 'customer',
@@ -699,7 +721,11 @@ router.get('/user/escort/:escortId', async (req, res) => {
         readByCustomer: msg.readByCustomer
       })),
       isOnline: true,
-      lastMessage: chat.messages[chat.messages.length - 1]?.message || '',
+      lastMessage: visibleMessages.length
+        ? (visibleMessages[visibleMessages.length - 1].messageType === 'image'
+            ? '📷 Image'
+            : (visibleMessages[visibleMessages.length - 1].message || ''))
+        : '',
       time: new Date(chat.updatedAt).toLocaleString()
     };
 
@@ -838,7 +864,6 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
         'live_queue:global',
         // other related keys
         `my_escorts:${chat.agentId}`,
-        `chat_${chatId}`,
         `user:chats:${chat.customerId}`
       ];
       for (const key of cacheKeys) {
@@ -847,6 +872,10 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
         } catch (delErr) {
           console.warn(`Cache delete failed for key ${key}:`, delErr?.message || delErr);
         }
+      }
+      if (typeof cache.deleteByPrefix === 'function') {
+        cache.deleteByPrefix(`chat_${chatId}`);
+        cache.deleteByPrefix(`chat_full_messages_${chatId}_`);
       }
     } catch (e) {
       console.error('Cache invalidation error:', e?.message || e);
@@ -947,7 +976,6 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
           'live_queue:global',
           // other related
           `my_escorts:${chat.agentId}`,
-          `chat_${chatId}`,
           `user:chats:${chat.customerId}`
         ];
         for (const key of cacheKeys) {
@@ -956,6 +984,10 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
           } catch (delErr) {
             console.warn(`Background cache delete failed for key ${key}:`, delErr?.message || delErr);
           }
+        }
+        if (typeof cache.deleteByPrefix === 'function') {
+          cache.deleteByPrefix(`chat_${chatId}`);
+          cache.deleteByPrefix(`chat_full_messages_${chatId}_`);
         }
 
         // Record earnings for agent commission (background operation)
@@ -1877,10 +1909,11 @@ router.get('/live-queue-updates', auth, async (req, res) => {
 router.get('/:chatId', auth, async (req, res) => {
   const startTime = Date.now();
   const { chatId } = req.params;
+  const requesterType = req.agent ? 'agent' : (req.user ? 'user' : 'unknown');
   
   try {
     // Check cache first
-    const cacheKey = `chat_${chatId}`;
+    const cacheKey = `chat_${chatId}_${requesterType}`;
     const cachedChat = cache.get(cacheKey);
     
     if (cachedChat) {
@@ -1900,13 +1933,16 @@ router.get('/:chatId', auth, async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
+    const allMessages = Array.isArray(chat.messages) ? chat.messages : [];
+    const visibleMessages = req.agent ? allMessages : allMessages.filter(msg => !msg.isDeleted);
+
     // Optimized unread count - only process recent messages if there are many
     let unreadCount = 0;
-    if (chat.messages && chat.messages.length > 0) {
+    if (visibleMessages.length > 0) {
       // For performance: if more than 100 messages, only check the last 50 for unread
-      const messagesToCheck = chat.messages.length > 100 
-        ? chat.messages.slice(-50) 
-        : chat.messages;
+      const messagesToCheck = visibleMessages.length > 100 
+        ? visibleMessages.slice(-50) 
+        : visibleMessages;
       
       unreadCount = messagesToCheck.filter(msg => 
         msg.sender === 'customer' && !msg.readByAgent
@@ -1942,9 +1978,9 @@ router.get('/:chatId', auth, async (req, res) => {
     const lastSeen = isUserActive ? new Date() : (uid ? activeMap.get(uid) : chat.updatedAt);
 
     // Limit messages for better performance - only return last 50 messages
-    const limitedMessages = chat.messages && chat.messages.length > 50 
-      ? chat.messages.slice(-50) 
-      : chat.messages;
+    const limitedMessages = visibleMessages.length > 50 
+      ? visibleMessages.slice(-50) 
+      : visibleMessages;
 
     const formattedChat = {
       _id: chat._id,
@@ -1966,7 +2002,7 @@ router.get('/:chatId', auth, async (req, res) => {
       customerAvatar: firstAvatar,
       customerProfileImage: firstAvatar,
       // Metadata for debugging
-      totalMessages: chat.messages?.length || 0,
+      totalMessages: visibleMessages.length,
       messagesShown: limitedMessages?.length || 0
     };
 
@@ -1988,12 +2024,13 @@ router.get('/:chatId', auth, async (req, res) => {
 router.get('/:chatId/messages/full', auth, async (req, res) => {
   const startTime = Date.now();
   const { chatId } = req.params;
+  const requesterType = req.agent ? 'agent' : (req.user ? 'user' : 'unknown');
   
   try {
     const { page = 1, limit = 100 } = req.query;
     
     // Check cache first
-    const cacheKey = `chat_full_messages_${chatId}_${page}_${limit}`;
+    const cacheKey = `chat_full_messages_${chatId}_${requesterType}_${page}_${limit}`;
     const cached = cache.get(cacheKey);
     
     if (cached) {
@@ -2009,12 +2046,17 @@ router.get('/:chatId/messages/full', auth, async (req, res) => {
     }
 
     // Implement pagination
-    const totalMessages = chat.messages?.length || 0;
+    let baseMessages = Array.isArray(chat.messages) ? chat.messages : [];
+    if (!req.agent) {
+      baseMessages = baseMessages.filter(msg => !msg.isDeleted);
+    }
+
+    const totalMessages = baseMessages.length;
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + parseInt(limit);
     
     // Get messages in reverse order (newest first) then reverse to get chronological
-    const allMessages = [...(chat.messages || [])].reverse();
+    const allMessages = [...baseMessages].reverse();
     const paginatedMessages = allMessages.slice(startIndex, endIndex).reverse();
     
     const response = {
@@ -2352,7 +2394,64 @@ router.delete('/:chatId/message/:messageIdOrIndex', auth, async (req, res) => {
     // Users paid for the message sending service, deletion doesn't reverse that
     
     await chat.save();
-    
+
+    // Clear related cache entries so subsequent fetches show the deleted state immediately
+    try {
+      const escortIdKey = chat.escortId?.toString?.() || chat.escortId;
+      const agentIdKey = chat.agentId?.toString?.() || chat.agentId;
+      const customerIdKey = chat.customerId?.toString?.() || chat.customerId;
+      const cacheKeys = [
+        'live_queue:global',
+        'live_queue_updates:all'
+      ];
+
+      if (escortIdKey) {
+        cacheKeys.push(`live_queue:${escortIdKey}`);
+        if (agentIdKey) {
+          cacheKeys.push(`live_queue:${escortIdKey}:${agentIdKey}`);
+        }
+      }
+
+      if (agentIdKey) {
+        cacheKeys.push(`my_escorts:${agentIdKey}`);
+      }
+
+      if (customerIdKey) {
+        cacheKeys.push(`user:chats:${customerIdKey}`);
+      }
+
+      const updaterId = req.agent?._id || req.agent?.id || req.user?.id;
+      if (updaterId) {
+        cacheKeys.push(`live_queue_updates:${updaterId.toString()}`);
+      }
+
+      cacheKeys.forEach(key => {
+        if (key) {
+          try {
+            cache.delete(key);
+          } catch (cacheErr) {
+            console.warn(`Cache delete failed for key ${key}:`, cacheErr?.message || cacheErr);
+          }
+        }
+      });
+
+      if (typeof cache.deleteByPrefix === 'function') {
+        cache.deleteByPrefix(`chat_${chatId}`);
+        cache.deleteByPrefix(`chat_full_messages_${chatId}_`);
+      }
+    } catch (cacheError) {
+      console.error('Cache invalidation error after message deletion:', cacheError?.message || cacheError);
+    }
+
+    try {
+      const clearFallback = req.app?.locals?.clearLiveQueueFallbackCache;
+      if (typeof clearFallback === 'function') {
+        clearFallback();
+      }
+    } catch (fallbackError) {
+      console.warn('Fallback live-queue cache clear failed after deletion:', fallbackError?.message || fallbackError);
+    }
+
     // Send WebSocket notification for real-time updates
     if (req.app.locals.wss) {
       const notification = {

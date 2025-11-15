@@ -9,6 +9,7 @@ const Subscription = require('../models/Subscription');
 const SubscriptionPlan = require('../models/SubscriptionPlan'); // Add this import
 const { isValidSwedishRegion, getSwedishRegions } = require('../constants/swedishRegions');
 const { isValidRelationshipStatus, getRelationshipStatuses } = require('../constants/relationshipStatuses');
+const Escort = require('../models/Escort');
 const EscortProfile = require('../models/EscortProfile');
 const AffiliateLink = require('../models/AffiliateLink');
 const { adminAuth } = require('../auth');
