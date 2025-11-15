@@ -10,6 +10,7 @@ const Earnings = require('../models/Earnings');
 const { auth, agentAuth } = require('../auth');
 const ActiveUsersService = require('../services/activeUsers');
 const emailService = require('../services/emailService');
+const { evaluateNotificationEligibility } = require('../services/emailNotificationEvaluator');
 const cache = require('../services/cache'); // Global cache service
 const reminderService = require('../services/reminderService');
 const mongoose = require('mongoose');
@@ -56,13 +57,11 @@ const processDeferredEmailNotification = async (context) => {
   const lockKey = `email_notify_lock:${chatId}`;
   const locked = cache.get(lockKey);
   if (locked) {
-    console.log(`⏳ Deferred email skipped for chat ${chatId} (lock still active)`);
     return;
   }
 
   const chatDoc = await Chat.findById(chatId).lean();
   if (!chatDoc) {
-    console.log(`⚠️ Deferred email aborted: chat ${chatId} not found`);
     return;
   }
 
@@ -74,7 +73,6 @@ const processDeferredEmailNotification = async (context) => {
   const activeMap = ActiveUsersService.getActiveUsers();
   const isUserActive = !!(customerId && activeMap && activeMap.has(customerId));
   if (isUserActive) {
-    console.log(`⚠️ Deferred email skipped: customer ${customerId} is back online`);
     return;
   }
 
@@ -84,87 +82,34 @@ const processDeferredEmailNotification = async (context) => {
   ]);
 
   if (!userDoc) {
-    console.log(`⚠️ Deferred email aborted: user ${customerId} not found`);
     return;
   }
 
-  const emailOk = !!userDoc.email;
-  const wantsEmails = !!(userDoc?.preferences?.emailUpdates !== false && userDoc?.preferences?.notifications !== false);
-  const msgSettings = userDoc?.preferences?.notificationSettings?.email?.messages || {};
-  const granularEnabled = msgSettings?.enabled !== false;
-  const rawOfflineMin = parseInt(msgSettings?.onlyWhenOfflineMinutes ?? 5, 10);
-  const offlineMin = Math.max(5, Math.min(10, Number.isNaN(rawOfflineMin) ? 5 : rawOfflineMin));
-  const offlineMinMs = offlineMin * 60 * 1000;
+  const eligibility = evaluateNotificationEligibility({
+    userDoc,
+    chat: chatDoc,
+    isUserActive,
+    escortId: chatDoc.escortId,
+    messageType: context.messageType,
+    messageText: context.messageText
+  });
 
-  let passesOfflineRule = offlineMin === 0;
-  let offlineStatus = 'deferred check';
-  let msUntilEligible = 0;
-
-  if (offlineMin > 0) {
-    passesOfflineRule = true;
-    if (userDoc?.lastActiveDate) {
-      const lastActive = new Date(userDoc.lastActiveDate).getTime();
-      const msSince = Date.now() - lastActive;
-      passesOfflineRule = msSince >= offlineMinMs;
-      offlineStatus = `offline for ${Math.round(msSince / 60000)}min (required: ${offlineMin}min)`;
-      if (!passesOfflineRule) {
-        msUntilEligible = Math.max(offlineMinMs - msSince, 0);
-      }
-    }
-
-    if (!passesOfflineRule) {
-      const chatLastCustomerTouch = chatDoc.lastCustomerResponse
-        || chatDoc.reminderResolvedAt
-        || chatDoc.reminderHandledAt
-        || chatDoc.updatedAt
-        || chatDoc.createdAt
-        || null;
-
-      if (chatLastCustomerTouch) {
-        const chatMsSince = Date.now() - new Date(chatLastCustomerTouch).getTime();
-        if (chatMsSince >= offlineMinMs) {
-          passesOfflineRule = true;
-          offlineStatus = `${offlineStatus} | fallback via chat inactivity (${Math.round(chatMsSince / 60000)}min)`;
-        } else {
-          msUntilEligible = Math.max(msUntilEligible, offlineMinMs - chatMsSince);
-        }
-      }
-    }
-  }
-
-  const overrides = msgSettings?.perEscort || [];
-  let passesPerEscort = true;
-  if (overrides.length && chatDoc.escortId) {
-    const found = overrides.find(o => o.escortId?.toString() === chatDoc.escortId.toString());
-    if (found && found.enabled === false) {
-      passesPerEscort = false;
-    }
-  }
-
-  if (!(emailOk && wantsEmails && granularEnabled && passesPerEscort)) {
-    console.log(`⚠️ Deferred email skipped for chat ${chatId}: eligibility mismatch`, {
-      emailOk,
-      wantsEmails,
-      granularEnabled,
-      passesPerEscort
-    });
+  if (!(eligibility.emailOk && eligibility.wantsEmails && eligibility.granularEnabled && eligibility.passesPerEscort)) {
     return;
   }
 
-  if (!passesOfflineRule) {
-    if (msUntilEligible > 0 && msUntilEligible !== Infinity) {
-      console.log(`⏳ Deferred email still waiting for chat ${chatId}; retry in ${Math.ceil(msUntilEligible / 60000)}min`);
-      scheduleDeferredEmailNotification(context, msUntilEligible);
+  if (!eligibility.passesOfflineRule) {
+    if (eligibility.msUntilEligible > 0 && eligibility.msUntilEligible !== Infinity) {
+      scheduleDeferredEmailNotification(context, eligibility.msUntilEligible);
     }
     return;
   }
 
   const fromName = escortDoc?.firstName || 'Escort';
-  const snippet = snippetFromContext || (context.messageType === 'image' ? '📷 Image message' : (context.messageText || ''));
+  const snippet = snippetFromContext || eligibility.snippet;
   const chatLink = process.env.FRONTEND_URL || 'https://hetasinglar.se';
 
   try {
-    console.log(`📧 Deferred send: emailing ${userDoc.email} for chat ${chatId} (${offlineStatus})`);
     const emailResult = await emailService.sendMessageNotification(
       userDoc.email,
       userDoc.username,
@@ -175,9 +120,6 @@ const processDeferredEmailNotification = async (context) => {
 
     if (emailResult) {
       cache.set(lockKey, true, 5 * 60 * 1000);
-      console.log(`✅ Deferred email notification sent for chat ${chatId}`);
-    } else {
-      console.log(`❌ Deferred email notification failed silently for chat ${chatId}`);
     }
   } catch (error) {
     console.error('❌ Deferred email send failed:', {
@@ -187,6 +129,112 @@ const processDeferredEmailNotification = async (context) => {
       responseCode: error?.responseCode,
       command: error?.command
     });
+  }
+};
+
+const triggerEmailNotification = async ({
+  chatId,
+  chat: providedChat,
+  messageType = 'text',
+  messageText = '',
+  snippetOverride
+}) => {
+  if (!chatId && !providedChat?._id) {
+    return;
+  }
+
+  try {
+    const normalizedChat = providedChat
+      ? (typeof providedChat.toObject === 'function'
+        ? providedChat.toObject()
+        : providedChat)
+      : await Chat.findById(chatId).lean();
+
+    if (!normalizedChat) {
+      return;
+    }
+
+    const normalizedChatId = normalizedChat._id?.toString?.();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const lockKey = `email_notify_lock:${normalizedChatId}`;
+    const locked = cache.get(lockKey);
+
+    const activeMap = ActiveUsersService.getActiveUsers();
+    const customerId = normalizedChat.customerId?.toString?.();
+    if (!customerId) {
+      return;
+    }
+
+    const isUserActive = !!(customerId && activeMap && activeMap.has(customerId));
+
+    if (locked) {
+      return;
+    }
+
+    const [userDoc, escortDoc] = await Promise.all([
+      User.findById(customerId).select('email username preferences lastActiveDate').lean(),
+      EscortProfile.findById(normalizedChat.escortId).select('firstName').lean()
+    ]);
+
+    if (!userDoc) {
+      return;
+    }
+
+    const eligibility = evaluateNotificationEligibility({
+      userDoc,
+      chat: normalizedChat,
+      isUserActive,
+      escortId: normalizedChat.escortId,
+      messageType,
+      messageText
+    });
+
+    if (eligibility.shouldSend) {
+      const fromName = escortDoc?.firstName || 'Escort';
+      const snippet = snippetOverride || eligibility.snippet;
+      const chatLink = process.env.FRONTEND_URL || 'https://hetasinglar.se';
+
+      try {
+        const emailResult = await emailService.sendMessageNotification(
+          userDoc.email,
+          userDoc.username,
+          fromName,
+          snippet,
+          chatLink
+        );
+
+        if (emailResult) {
+          cache.set(lockKey, true, 5 * 60 * 1000);
+        }
+      } catch (mailErr) {
+        console.error('❌ Email notification send failed:', {
+          error: mailErr?.message || mailErr,
+          code: mailErr?.code,
+          responseCode: mailErr?.responseCode,
+          command: mailErr?.command
+        });
+      }
+      return;
+    }
+
+    if (eligibility.canDefer && Number.isFinite(eligibility.msUntilEligible) && eligibility.msUntilEligible > 0) {
+      scheduleDeferredEmailNotification({
+        chatId: normalizedChatId,
+        customerId,
+        escortId: normalizedChat.escortId?.toString?.(),
+        messageType,
+        messageText,
+        snippet: snippetOverride || eligibility.snippet,
+        offlineMinMs: eligibility.offlineMinMs
+      }, eligibility.msUntilEligible);
+      return;
+    }
+
+  } catch (error) {
+    console.error('❌ Notification block error:', error?.message || error, error?.stack);
   }
 };
 
@@ -559,10 +607,14 @@ router.get('/live-queue/:escortId?/:chatId?', async (req, res) => {
 router.post('/:chatId/first-contact', auth, async (req, res) => {
   try {
     const { chatId } = req.params;
-  const { message, clientId } = req.body;
+    const { message, clientId } = req.body;
 
     if (!message) {
       return res.status(400).json({ message: 'Message is required' });
+    }
+
+    if (!req.agent) {
+      return res.status(403).json({ message: 'Agent authentication required' });
     }
 
     const chat = await Chat.findById(chatId);
@@ -570,16 +622,42 @@ router.post('/:chatId/first-contact', auth, async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
+    const now = new Date();
+    const firstContactMessage = {
+      sender: 'agent',
+      message,
+      messageType: 'text',
+      timestamp: now,
+      readByAgent: true,
+      readByCustomer: false
+    };
+
     // Update chat status and add message
     chat.status = 'assigned';
     chat.agentId = req.agent.id;
-    chat.messages.push({
-      sender: 'agent',
-      message: message,
-      timestamp: new Date()
-    });
+    chat.messages.push(firstContactMessage);
+    chat.updatedAt = now;
+    chat.lastAgentResponse = now;
+    chat.reminderHandled = true;
+    chat.reminderHandledAt = now;
+    chat.reminderActive = false;
+    chat.reminderSnoozedUntil = undefined;
+    chat.reminderPriority = undefined;
 
     await chat.save();
+
+    // Trigger email notification asynchronously for the first contact message
+    setImmediate(async () => {
+      try {
+        await triggerEmailNotification({
+          chat: chat.toObject(),
+          messageType: 'text',
+          messageText: message
+        });
+      } catch (notifyErr) {
+        console.error('❌ First contact notification error:', notifyErr?.message || notifyErr);
+      }
+    });
 
     // Broadcast WS chat_message so frontends can reconcile optimistic message
     try {
@@ -623,9 +701,10 @@ router.post('/:chatId/first-contact', auth, async (req, res) => {
     // Return formatted response
     res.json({
       id: chat._id,
-      message: message,
+      message,
+      messageType: 'text',
       sender: 'agent',
-      timestamp: new Date().toISOString()
+      timestamp: now.toISOString()
     });
   } catch (error) {
     console.error('First contact error:', error);
@@ -1112,6 +1191,14 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
     // 🔄 ALL HEAVY OPERATIONS MOVED TO BACKGROUND for instant messaging
     setImmediate(async () => {
       try {
+        if (req.agent && chatId) {
+          await triggerEmailNotification({
+            chatId,
+            messageType: newMessage.messageType,
+            messageText: newMessage.message
+          });
+        }
+
         // Handle coin deduction in background
         if (coinDeduction) {
           await User.findByIdAndUpdate(
@@ -1223,157 +1310,7 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
           });
         }
 
-        // Enhanced email notification to customer when agent sends a new message
-        try {
-          if (req.agent) {
-            // Throttle notifications per chat to avoid spam (5 minutes lock)
-            const lockKey = `email_notify_lock:${chat._id}`;
-            const locked = cache.get(lockKey);
-            const activeMap = ActiveUsersService.getActiveUsers();
-            const uid = chat.customerId?.toString();
-            const isUserActive = !!(uid && activeMap && activeMap.has(uid));
-
-            console.log(`📧 Email notification check for chat ${chat._id}: locked=${!!locked}, userActive=${isUserActive}`);
-
-            if (!locked) {
-              // Fetch user and escort details minimal fields
-              const [userDoc, escortDoc] = await Promise.all([
-                User.findById(chat.customerId).select('email username preferences lastActiveDate').lean(),
-                EscortProfile.findById(chat.escortId).select('firstName').lean()
-              ]);
-
-              if (!userDoc) {
-                console.log('⚠️ User not found for notification');
-                return;
-              }
-
-              const emailOk = !!(userDoc?.email);
-              const wantsEmails = !!(userDoc?.preferences?.emailUpdates !== false && userDoc?.preferences?.notifications !== false);
-
-              // Granular settings with better defaults
-              const msgSettings = userDoc?.preferences?.notificationSettings?.email?.messages || {};
-              const granularEnabled = (msgSettings?.enabled !== false);
-              const rawOfflineMin = parseInt(msgSettings?.onlyWhenOfflineMinutes ?? 5, 10);
-              // Ensure a reasonable window (5-10 minutes) unless user explicitly widened it
-              const offlineMin = Math.max(5, Math.min(10, Number.isNaN(rawOfflineMin) ? 5 : rawOfflineMin));
-              const offlineMinMs = offlineMin * 60 * 1000;
-              
-              // Enhanced offline rule logic
-              let passesOfflineRule = true;
-              let offlineStatus = 'unknown';
-              let msUntilEligible = 0;
-              
-              if (offlineMin > 0) {
-                if (isUserActive) {
-                  passesOfflineRule = false;
-                  offlineStatus = 'active';
-                } else if (userDoc?.lastActiveDate) {
-                  const lastActive = new Date(userDoc.lastActiveDate).getTime();
-                  const msSince = Date.now() - lastActive;
-                  passesOfflineRule = msSince >= offlineMinMs;
-                  offlineStatus = `offline for ${Math.round(msSince / 60000)}min (required: ${offlineMin}min)`;
-                  if (!passesOfflineRule) {
-                    msUntilEligible = Math.max(offlineMinMs - msSince, 0);
-                  }
-                  // Fallback to chat activity if lastActive is too recent but customer has not replied for longer
-                  if (!passesOfflineRule) {
-                    const chatLastCustomerTouch = chat.lastCustomerResponse
-                      || chat.reminderResolvedAt
-                      || chat.reminderHandledAt
-                      || null;
-                    if (chatLastCustomerTouch) {
-                      const chatMsSince = Date.now() - new Date(chatLastCustomerTouch).getTime();
-                      if (chatMsSince >= offlineMinMs) {
-                        passesOfflineRule = true;
-                        offlineStatus = `${offlineStatus} | fallback via chat inactivity (${Math.round(chatMsSince / 60000)}min)`;
-                      } else {
-                        msUntilEligible = Math.max(msUntilEligible, offlineMinMs - chatMsSince);
-                      }
-                    }
-                  }
-                } else {
-                  // No lastActiveDate - consider offline
-                  passesOfflineRule = true;
-                  offlineStatus = 'no activity data (considered offline)';
-                }
-              } else {
-                // No offline requirement - always send
-                offlineStatus = 'no offline requirement';
-              }
-
-              // Per-escort override: if present for this escort, require enabled=true
-              let passesPerEscort = true;
-              const overrides = msgSettings?.perEscort || [];
-              if (overrides.length) {
-                const found = overrides.find(o => o.escortId?.toString() === (chat.escortId?.toString?.() || String(chat.escortId)));
-                if (found && found.enabled === false) {
-                  passesPerEscort = false;
-                }
-              }
-
-              console.log(`📧 Notification eligibility for ${userDoc.username}:`, {
-                emailOk,
-                wantsEmails,
-                granularEnabled,
-                passesOfflineRule,
-                passesPerEscort,
-                offlineStatus,
-                userEmail: userDoc.email ? '[PRESENT]' : '[MISSING]'
-              });
-
-              if (emailOk && wantsEmails && granularEnabled && passesOfflineRule && passesPerEscort) {
-                const fromName = escortDoc?.firstName || 'Escort';
-                const snippet = newMessage.messageType === 'image' ? '📷 Image message' : (newMessage.message || '');
-                const chatLink = process.env.FRONTEND_URL || 'https://hetasinglar.se';
-                
-                try {
-                  console.log(`📧 Sending email notification to ${userDoc.email} from ${fromName}`);
-                  const emailResult = await emailService.sendMessageNotification(
-                    userDoc.email,
-                    userDoc.username,
-                    fromName,
-                    snippet,
-                    chatLink
-                  );
-                  
-                  if (emailResult) {
-                    console.log('✅ Email notification sent successfully');
-                    // Set throttle lock for 5 minutes
-                    cache.set(lockKey, true, 5 * 60 * 1000);
-                  } else {
-                    console.log('❌ Email notification failed (no exception thrown)');
-                  }
-                } catch (mailErr) {
-                  console.error('❌ Email notification send failed:', {
-                    error: mailErr?.message || mailErr,
-                    code: mailErr?.code,
-                    responseCode: mailErr?.responseCode,
-                    command: mailErr?.command
-                  });
-                }
-              } else {
-                if (msUntilEligible > 0 && !passesOfflineRule && emailOk && wantsEmails && granularEnabled && passesPerEscort) {
-                  console.log(`⏳ Email notification deferred for chat ${chat._id}; will retry in ${Math.ceil(msUntilEligible / 60000)}min unless user returns.`);
-                  scheduleDeferredEmailNotification({
-                    chatId: chat._id.toString(),
-                    customerId: uid,
-                    escortId: chat.escortId?.toString(),
-                    messageType: newMessage.messageType,
-                    messageText: newMessage.message,
-                    snippet: newMessage.messageType === 'image' ? '📷 Image message' : (newMessage.message || ''),
-                    offlineMinMs
-                  }, msUntilEligible);
-                } else {
-                  console.log('⚠️ Email notification skipped due to eligibility criteria');
-                }
-              }
-            } else {
-              console.log('⚠️ Email notification skipped - throttled (5min lock active)');
-            }
-          }
-        } catch (notifyErr) {
-          console.error('❌ Notification block error:', notifyErr?.message || notifyErr, notifyErr?.stack);
-        }
+        // Email notifications are handled asynchronously after response is sent
 
         console.log(`⚡ Background operations completed for chat ${chat._id}`);
       } catch (bgError) {
