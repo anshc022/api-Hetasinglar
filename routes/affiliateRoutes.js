@@ -6,9 +6,7 @@ const AffiliateLink = require('../models/AffiliateLink');
 const Earnings = require('../models/Earnings');
 const User = require('../models/User');
 const { adminAuth, agentAuth } = require('../auth');
-
-// Use a consistent frontend URL (avoid localhost in production)
-const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://hetasinglar.se').replace(/\/$/, '');
+const { resolveFrontendUrl } = require('../utils/frontendUrl');
 
 
 // Get affiliate dashboard data for agent
@@ -371,6 +369,8 @@ router.get('/admin/affiliate-links', adminAuth, async (req, res) => {
       .populate('agentId', 'agentId name email')
       .sort({ createdAt: -1 });
 
+    const frontendUrl = resolveFrontendUrl(req);
+
     const linksWithStats = await Promise.all(
       affiliateLinks.map(async (link) => {
         // Get referral count for this link
@@ -386,7 +386,7 @@ router.get('/admin/affiliate-links', adminAuth, async (req, res) => {
           createdAt: link.createdAt,
           clickCount: link.clickCount || 0,
           registrationCount: referralCount,
-          link: `${FRONTEND_URL}/register?ref=${link.affiliateCode}`
+          link: `${frontendUrl}/register?ref=${link.affiliateCode}`
         };
       })
     );
@@ -854,7 +854,7 @@ router.post('/create-link', agentAuth, async (req, res) => {
 
     res.json({
       success: true,
-      link: `${FRONTEND_URL}/register?ref=${affiliateLink.affiliateCode}`,
+      link: `${resolveFrontendUrl(req)}/register?ref=${affiliateLink.affiliateCode}`,
       affiliateCode: affiliateLink.affiliateCode,
       isActive: affiliateLink.isActive,
       createdAt: affiliateLink.createdAt
@@ -880,9 +880,11 @@ router.get('/my-link', agentAuth, async (req, res) => {
       });
     }
 
+    const frontendUrl = resolveFrontendUrl(req);
+
     res.json({
       hasLink: true,
-      link: `${FRONTEND_URL}/register?ref=${affiliateLink.affiliateCode}`,
+      link: `${frontendUrl}/register?ref=${affiliateLink.affiliateCode}`,
       affiliateCode: affiliateLink.affiliateCode,
       isActive: affiliateLink.isActive,
       createdAt: affiliateLink.createdAt,
@@ -1133,10 +1135,12 @@ router.post('/regenerate', agentAuth, async (req, res) => {
     
     await newAffiliateLink.save();
 
+    const frontendUrl = resolveFrontendUrl(req);
+
     res.json({
       success: true,
       hasLink: true,
-      link: `${FRONTEND_URL}/register?ref=${affiliateCode}`,
+      link: `${frontendUrl}/register?ref=${affiliateCode}`,
       affiliateCode: affiliateCode,
       isActive: true,
       createdAt: newAffiliateLink.createdAt,

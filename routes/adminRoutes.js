@@ -13,10 +13,8 @@ const EscortProfile = require('../models/EscortProfile');
 const AffiliateLink = require('../models/AffiliateLink');
 const { adminAuth } = require('../auth');
 const CommissionSettings = require('../models/CommissionSettings');
+const { resolveFrontendUrl } = require('../utils/frontendUrl');
 const router = express.Router();
-
-// Use a consistent frontend URL (avoid localhost in production)
-const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://hetasinglar.se').replace(/\/$/, '');
 
 // Admin Auth (no auth middleware needed for login)
 router.post('/login', async (req, res) => {
@@ -1719,6 +1717,8 @@ router.get('/affiliate-links', adminAuth, async (req, res) => {
       .populate('agentId', 'agentId name email')
       .sort({ createdAt: -1 });
 
+    const frontendUrl = resolveFrontendUrl(req);
+
     const linksWithStats = await Promise.all(
       affiliateLinks.map(async (link) => {
         // Get referral count for this link
@@ -1734,7 +1734,7 @@ router.get('/affiliate-links', adminAuth, async (req, res) => {
           createdAt: link.createdAt,
           clickCount: link.clickCount || 0,
           registrationCount: referralCount,
-          link: `${FRONTEND_URL}/register?ref=${link.affiliateCode}`
+          link: `${frontendUrl}/register?ref=${link.affiliateCode}`
         };
       })
     );

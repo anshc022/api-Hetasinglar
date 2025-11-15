@@ -1892,7 +1892,7 @@ router.get('/:chatId', auth, async (req, res) => {
 
     // Optimized database query with lean() for better performance
     const chat = await Chat.findById(chatId)
-      .populate('customerId', 'username email dateOfBirth sex createdAt coins')
+      .populate('customerId', 'username email dateOfBirth sex createdAt coins profile avatar avatarUrl profileImage profilePicture imageUrl')
       .populate('escortId', 'firstName gender profileImage country region relationshipStatus interests profession height dateOfBirth')
       .lean(); // Use lean for better performance
 
@@ -1912,6 +1912,28 @@ router.get('/:chatId', auth, async (req, res) => {
         msg.sender === 'customer' && !msg.readByAgent
       ).length;
     }
+
+    const customerAvatarCandidates = [
+      chat.customerId?.profileImage,
+      chat.customerId?.avatarUrl,
+      chat.customerId?.avatar,
+      chat.customerId?.profile?.avatarUrl,
+      chat.customerId?.profile?.avatar,
+      chat.customerId?.profile?.profileImage,
+      chat.customerId?.profilePicture,
+      chat.customerId?.imageUrl,
+      chat.customerId?.images,
+      chat.customerAvatar,
+      chat.customerProfileImage
+    ];
+
+    const firstAvatar = customerAvatarCandidates.find((candidate) => {
+      if (!candidate) return false;
+      if (typeof candidate === 'string') return candidate.trim().length > 0;
+      if (Array.isArray(candidate)) return candidate.length > 0;
+      if (candidate && typeof candidate === 'object') return Object.keys(candidate).length > 0;
+      return false;
+    }) || null;
 
     // Get active user status
     const activeMap = ActiveUsersService.getActiveUsers();
@@ -1941,6 +1963,8 @@ router.get('/:chatId', auth, async (req, res) => {
         lastSeen: lastSeen,
         status: isUserActive ? 'online' : 'offline'
       },
+      customerAvatar: firstAvatar,
+      customerProfileImage: firstAvatar,
       // Metadata for debugging
       totalMessages: chat.messages?.length || 0,
       messagesShown: limitedMessages?.length || 0
