@@ -147,7 +147,20 @@ const userSchema = new mongoose.Schema({
     phoneNumber: String,
     country: String,
     city: String,
+    region: String,
+    description: {
+      type: String,
+      maxlength: 2000
+    },
     avatar: String
+  },
+
+  legal: {
+    policyAcceptedAt: Date,
+    policyVersion: {
+      type: String,
+      default: 'current'
+    }
   },
   
   createdAt: {

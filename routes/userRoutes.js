@@ -93,7 +93,7 @@ router.get('/profile', auth, async (req, res) => {
 
 router.put('/profile', auth, async (req, res) => {
   try {
-    const { firstName, lastName, phoneNumber, country, city } = req.body || {};
+    const { firstName, lastName, phoneNumber, country, city, region, description } = req.body || {};
     const user = await User.findById(req.user.id);
 
     if (!user) {
@@ -107,6 +107,8 @@ router.put('/profile', auth, async (req, res) => {
     if (typeof phoneNumber === 'string') profile.phoneNumber = phoneNumber.trim();
     if (typeof country === 'string') profile.country = country.trim();
     if (typeof city === 'string') profile.city = city.trim();
+    if (typeof region === 'string') profile.region = region.trim();
+    if (typeof description === 'string') profile.description = description.trim();
 
     user.profile = profile;
     await user.save();

@@ -7,6 +7,8 @@ const router = express.Router();
 const User = require('./models/User');
 const emailService = require('./services/emailService');
 const { formatUserProfile } = require('./utils/userResponseFormatter');
+const { normalizeSwedishRegion } = require('./constants/swedishRegions');
+const { saveBase64Image } = require('./utils/saveBase64Image');
 
 // Auth Middleware
 const auth = async (req, res, next) => {
@@ -311,13 +313,53 @@ router.post('/refresh-token', async (req, res) => {
 // Routes
 router.post('/register', async (req, res) => {
   try {
-    const { username, email, password, dateOfBirth, sex, referral_code, full_name } = req.body;
+    const {
+      username,
+      email,
+      password,
+      dateOfBirth,
+      sex,
+      referral_code,
+      full_name,
+      firstName,
+      lastName,
+      region,
+      description,
+      profilePhoto,
+      acceptPolicy,
+      policyVersion
+    } = req.body;
     
     // Validate required fields
     if (!username || !email || !password) {
       return res.status(400).json({
         message: 'Username, email, and password are required'
       });
+    }
+
+    if (!firstName || !lastName) {
+      return res.status(400).json({ message: 'First name and last name are required' });
+    }
+
+    if (!region) {
+      return res.status(400).json({ message: 'Region selection is required' });
+    }
+
+    const normalizedRegion = normalizeSwedishRegion(region);
+    if (!normalizedRegion) {
+      return res.status(400).json({ message: 'Please choose a valid Swedish region' });
+    }
+
+    if (!description || typeof description !== 'string' || description.trim().length < 10) {
+      return res.status(400).json({ message: 'Description is required (minimum 10 characters)' });
+    }
+
+    if (!acceptPolicy) {
+      return res.status(400).json({ message: 'You must acknowledge that you have read and accept the policy' });
+    }
+
+    if (!profilePhoto || typeof profilePhoto !== 'string') {
+      return res.status(400).json({ message: 'Profile photo is required' });
     }
 
     // Check if user already exists
@@ -358,6 +400,17 @@ router.post('/register', async (req, res) => {
     }
 
     // Create user data without OTP and mark as verified immediately
+    let avatarPath = null;
+    try {
+      avatarPath = await saveBase64Image(profilePhoto, { prefix: 'avatar' });
+    } catch (imageError) {
+      return res.status(400).json({ message: imageError.message || 'Failed to process profile photo' });
+    }
+
+    const trimmedFirstName = firstName.trim();
+    const trimmedLastName = lastName.trim();
+    const combinedFullName = `${trimmedFirstName} ${trimmedLastName}`.trim();
+
     const userData = {
       username,
       email,
@@ -369,9 +422,22 @@ router.post('/register', async (req, res) => {
     };
 
     // Add optional fields if provided
-    if (full_name) userData.full_name = full_name;
+    userData.full_name = full_name || combinedFullName;
     if (dateOfBirth) userData.dateOfBirth = dateOfBirth;
     if (sex) userData.sex = sex;
+
+    userData.profile = {
+      firstName: trimmedFirstName,
+      lastName: trimmedLastName,
+      region: normalizedRegion,
+      description: description.trim(),
+      avatar: avatarPath
+    };
+
+    userData.legal = {
+      policyAcceptedAt: new Date(),
+      policyVersion: policyVersion || 'current'
+    };
 
     // Create user (verified)
     const user = await User.create(userData);

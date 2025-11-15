@@ -66,8 +66,14 @@ const formatUserProfile = (userDoc) => {
       phoneNumber: profile.phoneNumber || '',
       country: profile.country || '',
       city: profile.city || '',
+      region: profile.region || '',
+      description: profile.description || '',
       avatar: profile.avatar || null,
       avatarUrl: profile.avatar ? resolveAssetUrl(profile.avatar) : null
+    },
+    legal: {
+      policyAcceptedAt: userDoc.legal?.policyAcceptedAt || null,
+      policyVersion: userDoc.legal?.policyVersion || null
     }
   };
 };
