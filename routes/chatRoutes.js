@@ -18,6 +18,178 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
+// Deferred email notification scheduler (in-memory per instance)
+const pendingEmailNotifications = new Map();
+
+const scheduleDeferredEmailNotification = (context, delayMs) => {
+  if (!context?.chatId || delayMs <= 0) {
+    return;
+  }
+
+  const existing = pendingEmailNotifications.get(context.chatId);
+  if (existing) {
+    clearTimeout(existing.timeout);
+  }
+
+  const timeout = setTimeout(async () => {
+    pendingEmailNotifications.delete(context.chatId);
+    try {
+      await processDeferredEmailNotification(context);
+    } catch (error) {
+      console.error('Deferred email notification failed:', error?.message || error);
+    }
+  }, delayMs);
+
+  pendingEmailNotifications.set(context.chatId, {
+    timeout,
+    createdAt: Date.now(),
+    context
+  });
+};
+
+const processDeferredEmailNotification = async (context) => {
+  const { chatId, snippet: snippetFromContext } = context;
+  if (!chatId) {
+    return;
+  }
+
+  const lockKey = `email_notify_lock:${chatId}`;
+  const locked = cache.get(lockKey);
+  if (locked) {
+    console.log(`⏳ Deferred email skipped for chat ${chatId} (lock still active)`);
+    return;
+  }
+
+  const chatDoc = await Chat.findById(chatId).lean();
+  if (!chatDoc) {
+    console.log(`⚠️ Deferred email aborted: chat ${chatId} not found`);
+    return;
+  }
+
+  const customerId = chatDoc.customerId?.toString();
+  if (!customerId) {
+    return;
+  }
+
+  const activeMap = ActiveUsersService.getActiveUsers();
+  const isUserActive = !!(customerId && activeMap && activeMap.has(customerId));
+  if (isUserActive) {
+    console.log(`⚠️ Deferred email skipped: customer ${customerId} is back online`);
+    return;
+  }
+
+  const [userDoc, escortDoc] = await Promise.all([
+    User.findById(customerId).select('email username preferences lastActiveDate').lean(),
+    EscortProfile.findById(chatDoc.escortId).select('firstName').lean()
+  ]);
+
+  if (!userDoc) {
+    console.log(`⚠️ Deferred email aborted: user ${customerId} not found`);
+    return;
+  }
+
+  const emailOk = !!userDoc.email;
+  const wantsEmails = !!(userDoc?.preferences?.emailUpdates !== false && userDoc?.preferences?.notifications !== false);
+  const msgSettings = userDoc?.preferences?.notificationSettings?.email?.messages || {};
+  const granularEnabled = msgSettings?.enabled !== false;
+  const rawOfflineMin = parseInt(msgSettings?.onlyWhenOfflineMinutes ?? 5, 10);
+  const offlineMin = Math.max(5, Math.min(10, Number.isNaN(rawOfflineMin) ? 5 : rawOfflineMin));
+  const offlineMinMs = offlineMin * 60 * 1000;
+
+  let passesOfflineRule = offlineMin === 0;
+  let offlineStatus = 'deferred check';
+  let msUntilEligible = 0;
+
+  if (offlineMin > 0) {
+    passesOfflineRule = true;
+    if (userDoc?.lastActiveDate) {
+      const lastActive = new Date(userDoc.lastActiveDate).getTime();
+      const msSince = Date.now() - lastActive;
+      passesOfflineRule = msSince >= offlineMinMs;
+      offlineStatus = `offline for ${Math.round(msSince / 60000)}min (required: ${offlineMin}min)`;
+      if (!passesOfflineRule) {
+        msUntilEligible = Math.max(offlineMinMs - msSince, 0);
+      }
+    }
+
+    if (!passesOfflineRule) {
+      const chatLastCustomerTouch = chatDoc.lastCustomerResponse
+        || chatDoc.reminderResolvedAt
+        || chatDoc.reminderHandledAt
+        || chatDoc.updatedAt
+        || chatDoc.createdAt
+        || null;
+
+      if (chatLastCustomerTouch) {
+        const chatMsSince = Date.now() - new Date(chatLastCustomerTouch).getTime();
+        if (chatMsSince >= offlineMinMs) {
+          passesOfflineRule = true;
+          offlineStatus = `${offlineStatus} | fallback via chat inactivity (${Math.round(chatMsSince / 60000)}min)`;
+        } else {
+          msUntilEligible = Math.max(msUntilEligible, offlineMinMs - chatMsSince);
+        }
+      }
+    }
+  }
+
+  const overrides = msgSettings?.perEscort || [];
+  let passesPerEscort = true;
+  if (overrides.length && chatDoc.escortId) {
+    const found = overrides.find(o => o.escortId?.toString() === chatDoc.escortId.toString());
+    if (found && found.enabled === false) {
+      passesPerEscort = false;
+    }
+  }
+
+  if (!(emailOk && wantsEmails && granularEnabled && passesPerEscort)) {
+    console.log(`⚠️ Deferred email skipped for chat ${chatId}: eligibility mismatch`, {
+      emailOk,
+      wantsEmails,
+      granularEnabled,
+      passesPerEscort
+    });
+    return;
+  }
+
+  if (!passesOfflineRule) {
+    if (msUntilEligible > 0 && msUntilEligible !== Infinity) {
+      console.log(`⏳ Deferred email still waiting for chat ${chatId}; retry in ${Math.ceil(msUntilEligible / 60000)}min`);
+      scheduleDeferredEmailNotification(context, msUntilEligible);
+    }
+    return;
+  }
+
+  const fromName = escortDoc?.firstName || 'Escort';
+  const snippet = snippetFromContext || (context.messageType === 'image' ? '📷 Image message' : (context.messageText || ''));
+  const chatLink = process.env.FRONTEND_URL || 'https://hetasinglar.se';
+
+  try {
+    console.log(`📧 Deferred send: emailing ${userDoc.email} for chat ${chatId} (${offlineStatus})`);
+    const emailResult = await emailService.sendMessageNotification(
+      userDoc.email,
+      userDoc.username,
+      fromName,
+      snippet,
+      chatLink
+    );
+
+    if (emailResult) {
+      cache.set(lockKey, true, 5 * 60 * 1000);
+      console.log(`✅ Deferred email notification sent for chat ${chatId}`);
+    } else {
+      console.log(`❌ Deferred email notification failed silently for chat ${chatId}`);
+    }
+  } catch (error) {
+    console.error('❌ Deferred email send failed:', {
+      chatId,
+      error: error?.message || error,
+      code: error?.code,
+      responseCode: error?.responseCode,
+      command: error?.command
+    });
+  }
+};
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -1081,11 +1253,15 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
               // Granular settings with better defaults
               const msgSettings = userDoc?.preferences?.notificationSettings?.email?.messages || {};
               const granularEnabled = (msgSettings?.enabled !== false);
-              const offlineMin = Math.max(0, parseInt(msgSettings?.onlyWhenOfflineMinutes ?? 5)); // Reduced from 10 to 5 minutes
+              const rawOfflineMin = parseInt(msgSettings?.onlyWhenOfflineMinutes ?? 5, 10);
+              // Ensure a reasonable window (5-10 minutes) unless user explicitly widened it
+              const offlineMin = Math.max(5, Math.min(10, Number.isNaN(rawOfflineMin) ? 5 : rawOfflineMin));
+              const offlineMinMs = offlineMin * 60 * 1000;
               
               // Enhanced offline rule logic
               let passesOfflineRule = true;
               let offlineStatus = 'unknown';
+              let msUntilEligible = 0;
               
               if (offlineMin > 0) {
                 if (isUserActive) {
@@ -1094,8 +1270,27 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
                 } else if (userDoc?.lastActiveDate) {
                   const lastActive = new Date(userDoc.lastActiveDate).getTime();
                   const msSince = Date.now() - lastActive;
-                  passesOfflineRule = msSince >= offlineMin * 60 * 1000;
+                  passesOfflineRule = msSince >= offlineMinMs;
                   offlineStatus = `offline for ${Math.round(msSince / 60000)}min (required: ${offlineMin}min)`;
+                  if (!passesOfflineRule) {
+                    msUntilEligible = Math.max(offlineMinMs - msSince, 0);
+                  }
+                  // Fallback to chat activity if lastActive is too recent but customer has not replied for longer
+                  if (!passesOfflineRule) {
+                    const chatLastCustomerTouch = chat.lastCustomerResponse
+                      || chat.reminderResolvedAt
+                      || chat.reminderHandledAt
+                      || null;
+                    if (chatLastCustomerTouch) {
+                      const chatMsSince = Date.now() - new Date(chatLastCustomerTouch).getTime();
+                      if (chatMsSince >= offlineMinMs) {
+                        passesOfflineRule = true;
+                        offlineStatus = `${offlineStatus} | fallback via chat inactivity (${Math.round(chatMsSince / 60000)}min)`;
+                      } else {
+                        msUntilEligible = Math.max(msUntilEligible, offlineMinMs - chatMsSince);
+                      }
+                    }
+                  }
                 } else {
                   // No lastActiveDate - consider offline
                   passesOfflineRule = true;
@@ -1157,7 +1352,20 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
                   });
                 }
               } else {
-                console.log('⚠️ Email notification skipped due to eligibility criteria');
+                if (msUntilEligible > 0 && !passesOfflineRule && emailOk && wantsEmails && granularEnabled && passesPerEscort) {
+                  console.log(`⏳ Email notification deferred for chat ${chat._id}; will retry in ${Math.ceil(msUntilEligible / 60000)}min unless user returns.`);
+                  scheduleDeferredEmailNotification({
+                    chatId: chat._id.toString(),
+                    customerId: uid,
+                    escortId: chat.escortId?.toString(),
+                    messageType: newMessage.messageType,
+                    messageText: newMessage.message,
+                    snippet: newMessage.messageType === 'image' ? '📷 Image message' : (newMessage.message || ''),
+                    offlineMinMs
+                  }, msUntilEligible);
+                } else {
+                  console.log('⚠️ Email notification skipped due to eligibility criteria');
+                }
               }
             } else {
               console.log('⚠️ Email notification skipped - throttled (5min lock active)');
