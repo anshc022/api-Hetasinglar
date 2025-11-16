@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { testEmailConnection, sendOTPEmail, generateOTP, sendMessageNotification } = require('../services/emailService');
+const { evaluateNotificationEligibility } = require('../services/emailNotificationEvaluator');
 
 // Test email connection
 router.get('/verify', async (req, res) => {
@@ -112,6 +113,45 @@ router.post('/test-message-notification', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Test message notification email failed',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Evaluate notification eligibility logic with provided payload
+router.post('/evaluate-notification', (req, res) => {
+  try {
+    const {
+      userDoc = {},
+      chat = {},
+      isUserActive = false,
+      escortId = null,
+      messageType = 'text',
+      messageText = '',
+      now
+    } = req.body || {};
+
+    const evaluation = evaluateNotificationEligibility({
+      userDoc,
+      chat,
+      isUserActive,
+      escortId,
+      messageType,
+      messageText,
+      now: typeof now === 'number' ? now : Date.now()
+    });
+
+    res.status(200).json({
+      success: true,
+      evaluation,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Notification evaluation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to evaluate notification eligibility',
       error: error.message,
       timestamp: new Date().toISOString()
     });
