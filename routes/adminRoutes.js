@@ -15,7 +15,31 @@ const AffiliateLink = require('../models/AffiliateLink');
 const { adminAuth } = require('../auth');
 const CommissionSettings = require('../models/CommissionSettings');
 const { resolveFrontendUrl } = require('../utils/frontendUrl');
+const cache = require('../services/cache');
+const { closeChatsForEscort } = require('../services/chatCleanup');
 const router = express.Router();
+
+function broadcastLiveQueueRefresh(app, payload = {}) {
+  if (!app?.locals?.wss) {
+    return;
+  }
+
+  const message = JSON.stringify({
+    type: 'live_queue_refresh',
+    timestamp: new Date().toISOString(),
+    ...payload
+  });
+
+  app.locals.wss.clients.forEach(client => {
+    try {
+      if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
+        client.send(message);
+      }
+    } catch (err) {
+      console.warn('Live queue refresh broadcast failed:', err?.message || err);
+    }
+  });
+}
 
 // Admin Auth (no auth middleware needed for login)
 router.post('/login', async (req, res) => {
@@ -1246,10 +1270,35 @@ router.delete('/escorts/:id', adminAuth, async (req, res) => {
     if (!escort) {
       return res.status(404).json({ error: 'Escort not found' });
     }
-    
+
+    let closedChats = 0;
+    try {
+      const cascadeResult = await closeChatsForEscort(escort._id, 'escort_deleted_admin');
+      closedChats = cascadeResult.modifiedCount;
+      if (closedChats > 0) {
+        const clearFallback = req.app?.locals?.clearLiveQueueFallbackCache;
+        if (typeof clearFallback === 'function') {
+          clearFallback();
+        }
+        if (cache && typeof cache.delete === 'function') {
+          cache.delete('live_queue:global');
+          cache.delete('live_queue:global:v2');
+          cache.delete('live_queue_updates:all');
+        }
+        broadcastLiveQueueRefresh(req.app, {
+          escortId: escort._id.toString(),
+          reason: 'escort_deleted_admin',
+          closedChats
+        });
+      }
+    } catch (cascadeError) {
+      console.warn('Admin escort delete cascade failed:', cascadeError?.message || cascadeError);
+    }
+
     res.json({
       success: true,
-      message: 'Escort profile deleted successfully'
+      message: 'Escort profile deleted successfully',
+      closedChats
     });
   } catch (error) {
     console.error('Error deleting escort:', error);
@@ -1341,10 +1390,35 @@ router.delete('/escort-profiles/:id', adminAuth, async (req, res) => {
     if (!profile) {
       return res.status(404).json({ error: 'Escort profile not found' });
     }
-    
+
+    let closedChats = 0;
+    try {
+      const cascadeResult = await closeChatsForEscort(profile._id, 'escort_profile_deleted_admin');
+      closedChats = cascadeResult.modifiedCount;
+      if (closedChats > 0) {
+        const clearFallback = req.app?.locals?.clearLiveQueueFallbackCache;
+        if (typeof clearFallback === 'function') {
+          clearFallback();
+        }
+        if (cache && typeof cache.delete === 'function') {
+          cache.delete('live_queue:global');
+          cache.delete('live_queue:global:v2');
+          cache.delete('live_queue_updates:all');
+        }
+        broadcastLiveQueueRefresh(req.app, {
+          escortId: profile._id.toString(),
+          reason: 'escort_profile_deleted_admin',
+          closedChats
+        });
+      }
+    } catch (cascadeError) {
+      console.warn('Admin escort profile delete cascade failed:', cascadeError?.message || cascadeError);
+    }
+
     res.json({
       success: true,
-      message: 'Escort profile deleted successfully'
+      message: 'Escort profile deleted successfully',
+      closedChats
     });
   } catch (error) {
     console.error('Error deleting escort profile:', error);

@@ -6,6 +6,7 @@ const router = express.Router();
 const Agent = require('../models/Agent');
 const EscortProfile = require('../models/EscortProfile');
 const Chat = require('../models/Chat');
+const { closeChatsForEscort } = require('../services/chatCleanup');
 const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
 const cache = require('../services/cache'); 
@@ -73,6 +74,30 @@ function clearLiveQueueFallbackCache() {
 
 // Attach on router so server can register it in app.locals
 router.clearLiveQueueFallbackCache = clearLiveQueueFallbackCache;
+
+function broadcastLiveQueueRefresh(app, payload = {}) {
+  if (!app?.locals?.wss) {
+    return;
+  }
+
+  const message = {
+    type: 'live_queue_refresh',
+    timestamp: new Date().toISOString(),
+    ...payload
+  };
+
+  const serialized = JSON.stringify(message);
+
+  app.locals.wss.clients.forEach(client => {
+    try {
+      if (client.readyState === 1 && client.clientInfo?.role === 'agent') {
+        client.send(serialized);
+      }
+    } catch (err) {
+      console.warn('Failed to broadcast live queue refresh:', err?.message || err);
+    }
+  });
+}
 
 // Agent login - moved before auth middleware
 let pendingConnectionPromise = null;
@@ -2387,10 +2412,33 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
     }
 
     // Soft delete: mark status inactive and track deletion time
+    const now = new Date();
     escort.status = 'inactive';
-    escort.updatedAt = new Date();
-    escort.deletedAt = new Date(); // may not exist in schema but acceptable in Mongo
+    escort.updatedAt = now;
+    escort.deletedAt = now; // may not exist in schema but acceptable in Mongo
     await escort.save();
+
+    // Close related chats so they disappear from the live queue
+    let closedChats = 0;
+    try {
+      const cascadeResult = await closeChatsForEscort(escortId, 'escort_soft_deleted');
+      closedChats = cascadeResult.modifiedCount;
+      if (closedChats > 0) {
+        clearLiveQueueFallbackCache();
+        if (cache && typeof cache.delete === 'function') {
+          cache.delete('live_queue:global');
+          cache.delete('live_queue:global:v2');
+          cache.delete('live_queue_updates:all');
+        }
+        broadcastLiveQueueRefresh(req.app, {
+          escortId: escortId.toString(),
+          reason: 'escort_soft_deleted',
+          closedChats
+        });
+      }
+    } catch (cascadeError) {
+      console.warn('Failed to cascade close chats for escort deletion:', cascadeError?.message || cascadeError);
+    }
 
     // Deactivate related images (best-effort)
     try {
@@ -2409,7 +2457,8 @@ router.delete('/escorts/:id', agentAuth, async (req, res) => {
     return res.json({
       success: true,
       message: 'Escort profile deleted (soft-deleted) successfully',
-      escortId
+      escortId,
+      closedChats
     });
   } catch (error) {
     console.error('Error deleting escort profile:', error);

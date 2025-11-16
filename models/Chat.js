@@ -92,6 +92,8 @@ const chatSchema = new mongoose.Schema({
   reminderIntervalHours: { type: Number, default: 4 },
   // When customer finally replied resolving the reminder cycle
   reminderResolvedAt: { type: Date },
+  closedAt: { type: Date },
+  closedReason: { type: String },
   
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
