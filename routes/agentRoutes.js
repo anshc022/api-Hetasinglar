@@ -99,6 +99,73 @@ function broadcastLiveQueueRefresh(app, payload = {}) {
   });
 }
 
+// Centralized cache invalidation for live queue + panic room updates
+function invalidateLiveQueueCachesForChat(chatDoc, actorAgentId = null) {
+  try {
+    clearLiveQueueFallbackCache();
+  } catch (fallbackErr) {
+    console.warn('Live queue fallback clear warning:', fallbackErr?.message || fallbackErr);
+  }
+
+  const keysToClear = new Set([
+    'live_queue:global',
+    'live_queue:global:v2',
+    'live_queue_updates:all',
+    'panic_room:list',
+    'panic_room:global'
+  ]);
+
+  if (chatDoc) {
+    const escortKey = chatDoc.escortId ? chatDoc.escortId.toString() : 'all';
+    const assignedAgentKey = chatDoc.agentId ? chatDoc.agentId.toString() : null;
+    const actorAgentKey = actorAgentId ? actorAgentId.toString() : null;
+    const agentKey = actorAgentKey || assignedAgentKey || 'all';
+
+    keysToClear.add(`live_queue:${escortKey}`);
+    keysToClear.add(`live_queue:${escortKey}:${agentKey}`);
+    keysToClear.add(`live_queue_updates:${agentKey}`);
+    if (assignedAgentKey) {
+      keysToClear.add(`live_queue:${escortKey}:${assignedAgentKey}`);
+      keysToClear.add(`live_queue_updates:${assignedAgentKey}`);
+      keysToClear.add(`my_escorts:${assignedAgentKey}`);
+    }
+    try {
+      if (agentKey && agentKey !== 'all' && typeof dashboardCache?.delete === 'function') {
+        dashboardCache.delete(`dashboard_${agentKey}`);
+      }
+      if (assignedAgentKey && assignedAgentKey !== agentKey && typeof dashboardCache?.delete === 'function') {
+        dashboardCache.delete(`dashboard_${assignedAgentKey}`);
+      }
+    } catch (dashErr) {
+      console.warn('Dashboard cache clear warning:', dashErr?.message || dashErr);
+    }
+  }
+
+  keysToClear.forEach(key => {
+    if (!key) {
+      return;
+    }
+    try {
+      cache?.delete?.(key);
+    } catch (cacheErr) {
+      console.warn(`Live queue cache clear warning (${key}):`, cacheErr?.message || cacheErr);
+    }
+  });
+
+  if (typeof cache?.deleteByPrefix === 'function') {
+    try {
+      cache.deleteByPrefix('live_queue_updates:');
+      cache.deleteByPrefix('panic_room:');
+      if (chatDoc?._id) {
+        cache.deleteByPrefix(`chat_${chatDoc._id}`);
+        cache.deleteByPrefix(`chat_full_messages_${chatDoc._id}_`);
+      }
+    } catch (prefixErr) {
+      console.warn('Cache prefix clear warning:', prefixErr?.message || prefixErr);
+    }
+  }
+}
+
 // Agent login - moved before auth middleware
 let pendingConnectionPromise = null;
 
@@ -1959,6 +2026,7 @@ router.post('/chats/:chatId/panic-room', agentAuth, async (req, res) => {
     const { chatId } = req.params;
     const { reason, notes } = req.body;
     const agentId = req.agent._id;
+    const now = new Date();
     
     // First check if chat exists and get current state
     const existingChat = await Chat.findById(chatId);
@@ -1978,15 +2046,19 @@ router.post('/chats/:chatId/panic-room', agentAuth, async (req, res) => {
     const chat = await Chat.findByIdAndUpdate(
       chatId,
       {
-        isInPanicRoom: true,
-        panicRoomEnteredAt: new Date(),
-        panicRoomReason: reason || 'Manual isolation',
-        panicRoomEnteredBy: agentId,
+        $set: {
+          isInPanicRoom: true,
+          panicRoomEnteredAt: now,
+          panicRoomReason: reason || 'Manual isolation',
+          panicRoomEnteredBy: agentId,
+          updatedAt: now
+        },
         $push: {
           panicRoomNotes: {
             text: notes || 'Customer moved to panic room',
-            agentId: agentId,
-            agentName: req.agent.name
+            agentId,
+            agentName: req.agent.name,
+            timestamp: now
           }
         }
       },
@@ -1997,16 +2069,16 @@ router.post('/chats/:chatId/panic-room', agentAuth, async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
-    // Invalidate live-queue caches so UI reflects panic state immediately
-    try {
-      clearLiveQueueFallbackCache();
-      if (cache && typeof cache.delete === 'function') {
-        cache.delete('live_queue:global');
-        cache.delete('live_queue_updates:all');
-      }
-    } catch (e) {
-      console.warn('Live queue cache clear (panic move) warning:', e?.message || e);
-    }
+    invalidateLiveQueueCachesForChat(chat, agentId);
+    broadcastLiveQueueRefresh(req.app, {
+      reason: 'panic_room_update',
+      chatId: chat._id,
+      action: 'move',
+      isInPanicRoom: chat.isInPanicRoom,
+      panicRoomEnteredAt: chat.panicRoomEnteredAt,
+      panicRoomReason: chat.panicRoomReason,
+      panicRoomEnteredBy: chat.panicRoomEnteredBy
+    });
 
     res.json({
       success: true,
@@ -2015,7 +2087,8 @@ router.post('/chats/:chatId/panic-room', agentAuth, async (req, res) => {
         _id: chat._id,
         isInPanicRoom: chat.isInPanicRoom,
         panicRoomEnteredAt: chat.panicRoomEnteredAt,
-        panicRoomReason: chat.panicRoomReason
+        panicRoomReason: chat.panicRoomReason,
+        panicRoomEnteredBy: chat.panicRoomEnteredBy
       }
     });
   } catch (error) {
@@ -2033,16 +2106,24 @@ router.post('/chats/:chatId/remove-panic-room', agentAuth, async (req, res) => {
     const { chatId } = req.params;
     const { notes } = req.body;
     const agentId = req.agent._id;
+    const now = new Date();
     
     const chat = await Chat.findByIdAndUpdate(
       chatId,
       {
-        isInPanicRoom: false,
+        $set: {
+          isInPanicRoom: false,
+          panicRoomEnteredAt: null,
+          panicRoomReason: null,
+          panicRoomEnteredBy: null,
+          updatedAt: now
+        },
         $push: {
           panicRoomNotes: {
             text: notes || 'Customer removed from panic room',
-            agentId: agentId,
-            agentName: req.agent.name
+            agentId,
+            agentName: req.agent.name,
+            timestamp: now
           }
         }
       },
@@ -2053,23 +2134,26 @@ router.post('/chats/:chatId/remove-panic-room', agentAuth, async (req, res) => {
       return res.status(404).json({ message: 'Chat not found' });
     }
 
-    // Invalidate live-queue caches so UI reflects removal immediately
-    try {
-      clearLiveQueueFallbackCache();
-      if (cache && typeof cache.delete === 'function') {
-        cache.delete('live_queue:global');
-        cache.delete('live_queue_updates:all');
-      }
-    } catch (e) {
-      console.warn('Live queue cache clear (panic remove) warning:', e?.message || e);
-    }
+    invalidateLiveQueueCachesForChat(chat, agentId);
+    broadcastLiveQueueRefresh(req.app, {
+      reason: 'panic_room_update',
+      chatId: chat._id,
+      action: 'remove',
+      isInPanicRoom: chat.isInPanicRoom,
+      panicRoomEnteredAt: chat.panicRoomEnteredAt,
+      panicRoomReason: chat.panicRoomReason,
+      panicRoomEnteredBy: chat.panicRoomEnteredBy
+    });
 
     res.json({
       success: true,
       message: 'Chat removed from panic room successfully',
       chat: {
         _id: chat._id,
-        isInPanicRoom: chat.isInPanicRoom
+        isInPanicRoom: chat.isInPanicRoom,
+        panicRoomEnteredAt: chat.panicRoomEnteredAt,
+        panicRoomReason: chat.panicRoomReason,
+        panicRoomEnteredBy: chat.panicRoomEnteredBy
       }
     });
   } catch (error) {
