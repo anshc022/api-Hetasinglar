@@ -120,47 +120,32 @@
         }
         
         .log-entry {
-            margin-bottom: 8px;
-            padding: 8px 12px;
-            border-radius: 4px;
-            border-left: 3px solid transparent;
+            margin-bottom: 4px;
+            padding: 6px 10px;
+            border-radius: 3px;
             white-space: pre-wrap;
             word-break: break-word;
-        }
-        
-        .log-entry.info {
-            border-left-color: #3b82f6;
-            background: rgba(59, 130, 246, 0.1);
-        }
-        
-        .log-entry.warn {
-            border-left-color: #f59e0b;
-            background: rgba(245, 158, 11, 0.1);
-            color: #fbbf24;
+            font-size: 12px;
         }
         
         .log-entry.error {
-            border-left-color: #ef4444;
-            background: rgba(239, 68, 68, 0.1);
+            background: rgba(239, 68, 68, 0.15);
             color: #fca5a5;
         }
         
-        .log-entry.success {
-            border-left-color: #10b981;
-            background: rgba(16, 185, 129, 0.1);
-            color: #6ee7b7;
+        .log-entry.warn {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fbbf24;
         }
         
         .log-entry.email {
-            border-left-color: #8b5cf6;
-            background: rgba(139, 92, 246, 0.1);
+            background: rgba(139, 92, 246, 0.15);
             color: #c4b5fd;
         }
         
-        .log-entry.system {
-            border-left-color: #6b7280;
-            background: rgba(107, 114, 128, 0.1);
-            color: #d1d5db;
+        .log-entry.success {
+            background: rgba(16, 185, 129, 0.15);
+            color: #6ee7b7;
         }
         
         .timestamp {
@@ -211,20 +196,17 @@
 </head>
 <body>
     <div class="header">
-        <h1>🚀 Hetasinglar Backend Logs</h1>
-        <div class="info">Real-time system monitoring and debugging</div>
+        <h1>Backend Logs</h1>
     </div>
     
     <div class="controls">
         <button class="btn" onclick="refreshLogs()">🔄 Refresh</button>
-        <button class="btn secondary" onclick="clearLogs()">🗑️ Clear</button>
-        <button class="btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn">⏸️ Auto-refresh</button>
-        <button class="btn secondary" onclick="exportLogs()">📄 Export</button>
-        <button class="btn secondary" onclick="toggleFullscreen()">⛶ Fullscreen</button>
-        <input type="text" class="filter-input" id="filterInput" placeholder="Filter logs..." onkeyup="filterLogs()">
+        <button class="btn secondary" onclick="clearLogs()">Clear</button>
+        <button class="btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn">⏸️ Auto</button>
+        <input type="text" class="filter-input" id="filterInput" placeholder="Search logs..." onkeyup="filterLogs()">
         <div class="status">
             <div class="status-dot" id="statusDot"></div>
-            <span id="statusText">Connected</span>
+            <span id="statusText">Live</span>
         </div>
     </div>
     
@@ -235,9 +217,8 @@
     </div>
     
     <div class="stats">
-        <span>Total entries: <span id="totalEntries">0</span></span>
-        <span>Last updated: <span id="lastUpdated">Never</span></span>
-        <span>Auto-refresh: <span id="autoRefreshStatus">ON</span></span>
+        <span><span id="totalEntries">0</span> entries</span>
+        <span>Updated: <span id="lastUpdated">Never</span></span>
     </div>
 
     <script>
@@ -265,7 +246,7 @@
         }
         
         function formatTimestamp(timestamp) {
-            return new Date(timestamp).toLocaleString();
+            return new Date(timestamp).toLocaleTimeString();
         }
         
         function addLogEntry(message, timestamp = new Date()) {
