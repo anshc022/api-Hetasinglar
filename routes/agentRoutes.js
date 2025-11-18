@@ -6,6 +6,7 @@ const router = express.Router();
 const Agent = require('../models/Agent');
 const EscortProfile = require('../models/EscortProfile');
 const Chat = require('../models/Chat');
+const User = require('../models/User');
 const { closeChatsForEscort } = require('../services/chatCleanup');
 const { auth, agentAuth } = require('../auth');
 const AgentImage = require('../models/AgentImage');
@@ -15,6 +16,7 @@ const crypto = require('crypto');
 const { performanceMonitor } = require('../utils/performanceMonitor');
 const { isValidSwedishRegion, getSwedishRegions, normalizeSwedishRegion } = require('../constants/swedishRegions');
 const { isValidRelationshipStatus, getRelationshipStatuses } = require('../constants/relationshipStatuses');
+const { notifyPanicRoomStatus } = require('../services/discordNotificationService');
 // Inflight map to de-duplicate concurrent fetches per cacheKey
 const inflightFetches = new Map();
 
@@ -2080,6 +2082,41 @@ router.post('/chats/:chatId/panic-room', agentAuth, async (req, res) => {
       panicRoomEnteredBy: chat.panicRoomEnteredBy
     });
 
+    const chatPayload = typeof chat.toObject === 'function' ? chat.toObject({ depopulate: true }) : chat;
+
+    let customerDoc = null;
+    let escortDoc = null;
+    try {
+      if (chatPayload?.customerId) {
+        customerDoc = await User.findById(chatPayload.customerId).lean();
+      }
+    } catch (lookupError) {
+      console.warn('Panic room notify: customer lookup failed', lookupError?.message || lookupError);
+    }
+
+    try {
+      if (chatPayload?.escortId) {
+        escortDoc = await EscortProfile.findById(chatPayload.escortId).lean();
+      }
+    } catch (escortLookupError) {
+      console.warn('Panic room notify: escort lookup failed', escortLookupError?.message || escortLookupError);
+    }
+
+    notifyPanicRoomStatus(chatPayload, {
+      event: 'entered',
+      customer: customerDoc,
+      escort: escortDoc,
+      triggeredBy: {
+        id: req.agent?._id,
+        name: req.agent?.name,
+        email: req.agent?.email
+      },
+      reason: chatPayload.panicRoomReason,
+      notes: notes
+    }).catch((error) => {
+      console.warn('Discord panic room notification (entered) failed:', error?.message || error);
+    });
+
     res.json({
       success: true,
       message: 'Chat moved to panic room successfully',
@@ -2143,6 +2180,40 @@ router.post('/chats/:chatId/remove-panic-room', agentAuth, async (req, res) => {
       panicRoomEnteredAt: chat.panicRoomEnteredAt,
       panicRoomReason: chat.panicRoomReason,
       panicRoomEnteredBy: chat.panicRoomEnteredBy
+    });
+
+    const chatPayload = typeof chat.toObject === 'function' ? chat.toObject({ depopulate: true }) : chat;
+
+    let customerDoc = null;
+    let escortDoc = null;
+    try {
+      if (chatPayload?.customerId) {
+        customerDoc = await User.findById(chatPayload.customerId).lean();
+      }
+    } catch (lookupError) {
+      console.warn('Panic room notify: customer lookup failed', lookupError?.message || lookupError);
+    }
+
+    try {
+      if (chatPayload?.escortId) {
+        escortDoc = await EscortProfile.findById(chatPayload.escortId).lean();
+      }
+    } catch (escortLookupError) {
+      console.warn('Panic room notify: escort lookup failed', escortLookupError?.message || escortLookupError);
+    }
+
+    notifyPanicRoomStatus(chatPayload, {
+      event: 'removed',
+      customer: customerDoc,
+      escort: escortDoc,
+      triggeredBy: {
+        id: req.agent?._id,
+        name: req.agent?.name,
+        email: req.agent?.email
+      },
+      notes: notes
+    }).catch((error) => {
+      console.warn('Discord panic room notification (removed) failed:', error?.message || error);
     });
 
     res.json({

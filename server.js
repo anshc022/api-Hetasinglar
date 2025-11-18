@@ -39,6 +39,7 @@ const Agent = require('./models/Agent');
 const Subscription = require('./models/Subscription');
 const EscortProfile = require('./models/EscortProfile');
 const chatModeratorsService = require('./services/chatModerators');
+const { notifyPanicRoomStatus } = require('./services/discordNotificationService');
 // Reminder system constants
 const REMINDER_CHECK_INTERVAL_MS = 60 * 1000; // run every 1 minute
 const DEFAULT_REMINDER_INTERVAL_HOURS = 4; // 4 hours inactivity
@@ -710,6 +711,55 @@ wss.on('connection', (ws) => {
               }
             }
           });
+
+          if (chat.isInPanicRoom && data.sender === 'customer') {
+            const chatPayload = typeof chat.toObject === 'function' ? chat.toObject({ depopulate: true }) : chat;
+
+            let customerPayload = null;
+            let escortPayload = null;
+            try {
+              if (chat.customerId && typeof chat.customerId === 'object') {
+                if (typeof chat.customerId.toObject === 'function') {
+                  customerPayload = chat.customerId.toObject({ depopulate: true });
+                } else {
+                  customerPayload = chat.customerId;
+                }
+              }
+            } catch (customerConversionError) {
+              console.warn('Panic room notify: customer payload conversion failed', customerConversionError?.message || customerConversionError);
+            }
+
+            try {
+              if (chat.escortId && typeof chat.escortId === 'object') {
+                if (typeof chat.escortId.toObject === 'function') {
+                  escortPayload = chat.escortId.toObject({ depopulate: true });
+                } else {
+                  escortPayload = chat.escortId;
+                }
+              }
+            } catch (escortConversionError) {
+              console.warn('Panic room notify: escort payload conversion failed', escortConversionError?.message || escortConversionError);
+            }
+
+            const messagePreview = data.messageType === 'image'
+              ? (data.filename ? `📷 Image: ${data.filename}` : '📷 Image message')
+              : data.message;
+
+            notifyPanicRoomStatus(chatPayload, {
+              event: 'message',
+              customer: customerPayload,
+              escort: escortPayload,
+              message: messagePreview,
+              triggeredBy: {
+                id: customerPayload?._id || chatPayload?.customerId,
+                name: customerPayload?.username || customerPayload?.profile?.firstName,
+                type: 'customer'
+              },
+              reason: chatPayload?.panicRoomReason
+            }).catch((error) => {
+              console.warn('Discord panic room notification (message) failed:', error?.message || error);
+            });
+          }
 
           // Broadcast live queue update to all agents
           const liveQueueUpdate = {
