@@ -21,6 +21,7 @@ const fs = require('fs');
 
 // Deferred email notification scheduler (in-memory per instance)
 const pendingEmailNotifications = new Map();
+const emailNotificationDebug = process.env.EMAIL_NOTIFICATION_DEBUG === 'true';
 
 const scheduleDeferredEmailNotification = (context, delayMs) => {
   if (!context?.chatId || delayMs <= 0) {
@@ -30,6 +31,16 @@ const scheduleDeferredEmailNotification = (context, delayMs) => {
   const existing = pendingEmailNotifications.get(context.chatId);
   if (existing) {
     clearTimeout(existing.timeout);
+  }
+
+  if (emailNotificationDebug) {
+    console.log('📧 Scheduling deferred email notification', {
+      chatId: context.chatId,
+      delayMs,
+      delayMinutes: Math.round(delayMs / 60000 * 100) / 100,
+      messageType: context.messageType,
+      snippet: context.snippet?.slice?.(0, 80) || null
+    });
   }
 
   const timeout = setTimeout(async () => {
@@ -94,12 +105,42 @@ const processDeferredEmailNotification = async (context) => {
     messageText: context.messageText
   });
 
+  if (emailNotificationDebug) {
+    console.log('📧 Deferred eligibility check', {
+      chatId,
+      userId: userDoc._id?.toString?.(),
+      shouldSend: eligibility.shouldSend,
+      canDefer: eligibility.canDefer,
+      passesOfflineRule: eligibility.passesOfflineRule,
+      offlineStatus: eligibility.offlineStatus,
+      msUntilEligible: eligibility.msUntilEligible,
+      lastActiveDate: userDoc.lastActiveDate,
+      chatUpdatedAt: chatDoc.updatedAt
+    });
+  }
+
   if (!(eligibility.emailOk && eligibility.wantsEmails && eligibility.granularEnabled && eligibility.passesPerEscort)) {
+    if (emailNotificationDebug) {
+      console.log('📧 Deferred email skipped - preferences disallow send', {
+        chatId,
+        emailOk: eligibility.emailOk,
+        wantsEmails: eligibility.wantsEmails,
+        granularEnabled: eligibility.granularEnabled,
+        passesPerEscort: eligibility.passesPerEscort
+      });
+    }
     return;
   }
 
   if (!eligibility.passesOfflineRule) {
     if (eligibility.msUntilEligible > 0 && eligibility.msUntilEligible !== Infinity) {
+      if (emailNotificationDebug) {
+        console.log('📧 Deferred email rescheduled - still within offline window', {
+          chatId,
+          msUntilEligible: eligibility.msUntilEligible,
+          offlineStatus: eligibility.offlineStatus
+        });
+      }
       scheduleDeferredEmailNotification(context, eligibility.msUntilEligible);
     }
     return;
@@ -192,6 +233,23 @@ const triggerEmailNotification = async ({
       messageText
     });
 
+    if (emailNotificationDebug) {
+      console.log('📧 Email notification eligibility', {
+        chatId: normalizedChatId,
+        userId: customerId,
+        messageType,
+        shouldSend: eligibility.shouldSend,
+        canDefer: eligibility.canDefer,
+        passesOfflineRule: eligibility.passesOfflineRule,
+        offlineStatus: eligibility.offlineStatus,
+        msUntilEligible: eligibility.msUntilEligible,
+        offlineMinutes: eligibility.offlineMinutes,
+        isUserActive: eligibility.isUserActive,
+        lastActiveDate: userDoc.lastActiveDate,
+        chatUpdatedAt: normalizedChat.updatedAt
+      });
+    }
+
     if (eligibility.shouldSend) {
       const fromName = escortDoc?.firstName || 'Escort';
       const snippet = snippetOverride || eligibility.snippet;
@@ -221,6 +279,13 @@ const triggerEmailNotification = async ({
     }
 
     if (eligibility.canDefer && Number.isFinite(eligibility.msUntilEligible) && eligibility.msUntilEligible > 0) {
+      if (emailNotificationDebug) {
+        console.log('📧 Email notification deferred', {
+          chatId: normalizedChatId,
+          msUntilEligible: eligibility.msUntilEligible,
+          offlineStatus: eligibility.offlineStatus
+        });
+      }
       scheduleDeferredEmailNotification({
         chatId: normalizedChatId,
         customerId,
@@ -231,6 +296,21 @@ const triggerEmailNotification = async ({
         offlineMinMs: eligibility.offlineMinMs
       }, eligibility.msUntilEligible);
       return;
+    }
+
+    if (emailNotificationDebug) {
+      console.log('📧 Email notification not sent and not deferred', {
+        chatId: normalizedChatId,
+        reason: 'Eligibility conditions not met',
+        summary: {
+          emailOk: eligibility.emailOk,
+          wantsEmails: eligibility.wantsEmails,
+          granularEnabled: eligibility.granularEnabled,
+          passesPerEscort: eligibility.passesPerEscort,
+          passesOfflineRule: eligibility.passesOfflineRule,
+          msUntilEligible: eligibility.msUntilEligible
+        }
+      });
     }
 
   } catch (error) {

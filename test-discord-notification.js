@@ -1,4 +1,9 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({
+  path: process.env.NODE_ENV === 'production' 
+    ? path.join(__dirname, '.env.production')
+    : path.join(__dirname, '.env')
+});
 const { notifyNewCustomerRegistration, notifyPanicRoomStatus } = require('./services/discordNotificationService');
 
 // Mock user data for testing

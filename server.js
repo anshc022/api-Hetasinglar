@@ -124,7 +124,7 @@ app.use((req, res, next) => {
 
 // Optimized body parsing with performance settings
 app.use(express.json({ 
-  limit: '5mb',
+  limit: '15mb',
   verify: (req, res, buf) => {
     // Pre-parse optimization - only for small payloads
     if (buf.length < 1000) {
@@ -133,7 +133,7 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ 
-  limit: '5mb', 
+  limit: '15mb', 
   extended: true,
   parameterLimit: 1000 // Limit parameters for security and performance
 }));
