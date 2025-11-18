@@ -161,10 +161,23 @@ const processDeferredEmailNotification = async (context) => {
 
     if (emailResult) {
       cache.set(lockKey, true, 5 * 60 * 1000);
+      console.log('✅ Deferred email notification sent successfully', {
+        chatId,
+        recipient: userDoc.email,
+        fromName,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      console.log('❌ Deferred email notification failed to send', {
+        chatId,
+        recipient: userDoc.email,
+        reason: 'Email service returned false'
+      });
     }
   } catch (error) {
     console.error('❌ Deferred email send failed:', {
       chatId,
+      recipient: userDoc?.email,
       error: error?.message || error,
       code: error?.code,
       responseCode: error?.responseCode,
@@ -266,9 +279,23 @@ const triggerEmailNotification = async ({
 
         if (emailResult) {
           cache.set(lockKey, true, 5 * 60 * 1000);
+          console.log('✅ Email notification sent successfully', {
+            chatId: normalizedChatId,
+            recipient: userDoc.email,
+            fromName,
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          console.log('❌ Email notification failed to send', {
+            chatId: normalizedChatId,
+            recipient: userDoc.email,
+            reason: 'Email service returned false'
+          });
         }
       } catch (mailErr) {
         console.error('❌ Email notification send failed:', {
+          chatId: normalizedChatId,
+          recipient: userDoc?.email,
           error: mailErr?.message || mailErr,
           code: mailErr?.code,
           responseCode: mailErr?.responseCode,
