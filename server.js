@@ -26,7 +26,7 @@ const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const commissionRoutes = require('./routes/commissionRoutes');
 const userAssignmentRoutes = require('./routes/userAssignmentRoutes');
 const affiliateRoutes = require('./routes/affiliateRoutes');
-const logRoutes = require('./routes/logRoutes');
+const logsRoutes = require('./routes/logsRoutes');
 const firstContactRoutes = require('./routes/firstContactRoutes');
 const likeRoutes = require('./routes/likeRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -141,6 +141,9 @@ app.use(express.urlencoded({
 // Public asset serving (profile images, chat uploads, etc.)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Serve logs viewer interface
+app.use('/public', express.static(path.join(__dirname, 'public')));
+
 // Add response time header for monitoring (fixed version)
 app.use((req, res, next) => {
   const start = Date.now();
@@ -169,11 +172,21 @@ app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/commission', commissionRoutes);
 app.use('/api/user-assignment', userAssignmentRoutes);
 app.use('/api/affiliate', affiliateRoutes);
-app.use('/api/logs', logRoutes); // Add logs API routes
+app.use('/api', logsRoutes); // Add logs API routes
 app.use('/api/first-contact', firstContactRoutes); // Add first contact API routes
 app.use('/api/likes', likeRoutes); // Add likes API routes
 app.use('/api/users', userRoutes);
 app.use('/api/email-test', require('./routes/emailTestRoutes')); // Add email test routes
+
+// Serve logs viewer as the main page
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'logs.html'));
+});
+
+// Serve logs viewer at /logs as well
+app.get('/logs', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'logs.html'));
+});
 
 // Expose helper to clear fallback live queue cache
 if (typeof agentRoutes.clearLiveQueueFallbackCache === 'function') {

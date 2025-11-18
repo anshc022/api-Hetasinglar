@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hetasinglar Backend Logs</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #f43f5e, #ec4899);
+            padding: 15px 20px;
+            color: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        
+        .header .info {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+        
+        .controls {
+            background: #2d2d2d;
+            padding: 15px 20px;
+            border-bottom: 1px solid #404040;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            background: #f43f5e;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        
+        .btn:hover {
+            background: #e11d48;
+        }
+        
+        .btn.secondary {
+            background: #6b7280;
+        }
+        
+        .btn.secondary:hover {
+            background: #4b5563;
+        }
+        
+        .filter-input {
+            background: #404040;
+            border: 1px solid #606060;
+            color: #e0e0e0;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            min-width: 200px;
+        }
+        
+        .filter-input::placeholder {
+            color: #9ca3af;
+        }
+        
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #10b981;
+        }
+        
+        .status-dot.disconnected {
+            background: #ef4444;
+        }
+        
+        .logs-container {
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .logs {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #1a1a1a;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            border-left: 3px solid transparent;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        
+        .log-entry.info {
+            border-left-color: #3b82f6;
+            background: rgba(59, 130, 246, 0.1);
+        }
+        
+        .log-entry.warn {
+            border-left-color: #f59e0b;
+            background: rgba(245, 158, 11, 0.1);
+            color: #fbbf24;
+        }
+        
+        .log-entry.error {
+            border-left-color: #ef4444;
+            background: rgba(239, 68, 68, 0.1);
+            color: #fca5a5;
+        }
+        
+        .log-entry.success {
+            border-left-color: #10b981;
+            background: rgba(16, 185, 129, 0.1);
+            color: #6ee7b7;
+        }
+        
+        .log-entry.email {
+            border-left-color: #8b5cf6;
+            background: rgba(139, 92, 246, 0.1);
+            color: #c4b5fd;
+        }
+        
+        .log-entry.system {
+            border-left-color: #6b7280;
+            background: rgba(107, 114, 128, 0.1);
+            color: #d1d5db;
+        }
+        
+        .timestamp {
+            color: #9ca3af;
+            font-size: 11px;
+            margin-right: 10px;
+        }
+        
+        .loading {
+            text-align: center;
+            color: #9ca3af;
+            padding: 40px;
+        }
+        
+        .no-logs {
+            text-align: center;
+            color: #6b7280;
+            padding: 40px;
+        }
+        
+        .stats {
+            background: #2d2d2d;
+            padding: 10px 20px;
+            border-top: 1px solid #404040;
+            font-size: 12px;
+            color: #9ca3af;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        @media (max-width: 768px) {
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .filter-input {
+                min-width: auto;
+            }
+            
+            .status {
+                margin-left: 0;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 Hetasinglar Backend Logs</h1>
+        <div class="info">Real-time system monitoring and debugging</div>
+    </div>
+    
+    <div class="controls">
+        <button class="btn" onclick="refreshLogs()">🔄 Refresh</button>
+        <button class="btn secondary" onclick="clearLogs()">🗑️ Clear</button>
+        <button class="btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn">⏸️ Auto-refresh</button>
+        <button class="btn secondary" onclick="exportLogs()">📄 Export</button>
+        <button class="btn secondary" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+        <input type="text" class="filter-input" id="filterInput" placeholder="Filter logs..." onkeyup="filterLogs()">
+        <div class="status">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Connected</span>
+        </div>
+    </div>
+    
+    <div class="logs-container">
+        <div class="logs" id="logsContainer">
+            <div class="loading">Loading logs...</div>
+        </div>
+    </div>
+    
+    <div class="stats">
+        <span>Total entries: <span id="totalEntries">0</span></span>
+        <span>Last updated: <span id="lastUpdated">Never</span></span>
+        <span>Auto-refresh: <span id="autoRefreshStatus">ON</span></span>
+    </div>
+
+    <script>
+        let logs = [];
+        let filteredLogs = [];
+        let autoRefresh = true;
+        let refreshInterval;
+        
+        // Log type detection patterns
+        const logPatterns = {
+            email: /📧|email|notification|smtp/i,
+            error: /error|failed|❌|exception/i,
+            warn: /warn|warning|⚠️/i,
+            success: /✅|success|completed|sent successfully/i,
+            system: /🔍|🚀|💾|⚡|🔔|🗄️|auth|cache/i
+        };
+        
+        function detectLogType(message) {
+            for (const [type, pattern] of Object.entries(logPatterns)) {
+                if (pattern.test(message)) {
+                    return type;
+                }
+            }
+            return 'info';
+        }
+        
+        function formatTimestamp(timestamp) {
+            return new Date(timestamp).toLocaleString();
+        }
+        
+        function addLogEntry(message, timestamp = new Date()) {
+            const logType = detectLogType(message);
+            const entry = {
+                message,
+                timestamp,
+                type: logType,
+                id: Date.now() + Math.random()
+            };
+            
+            logs.unshift(entry);
+            
+            // Keep only last 1000 entries
+            if (logs.length > 1000) {
+                logs = logs.slice(0, 1000);
+            }
+            
+            filterLogs();
+            updateStats();
+        }
+        
+        function renderLogs() {
+            const container = document.getElementById('logsContainer');
+            
+            if (filteredLogs.length === 0) {
+                container.innerHTML = '<div class="no-logs">No logs to display</div>';
+                return;
+            }
+            
+            const html = filteredLogs.map(log => `
+                <div class="log-entry ${log.type}">
+                    <span class="timestamp">${formatTimestamp(log.timestamp)}</span>
+                    ${log.message}
+                </div>
+            `).join('');
+            
+            container.innerHTML = html;
+            
+            // Auto-scroll to top for newest logs
+            container.scrollTop = 0;
+        }
+        
+        function filterLogs() {
+            const filterText = document.getElementById('filterInput').value.toLowerCase();
+            
+            if (!filterText) {
+                filteredLogs = logs;
+            } else {
+                filteredLogs = logs.filter(log => 
+                    log.message.toLowerCase().includes(filterText)
+                );
+            }
+            
+            renderLogs();
+        }
+        
+        async function fetchLogs() {
+            try {
+                const params = new URLSearchParams({
+                    lines: '100',  // Fetch more logs
+                });
+                
+                const response = await fetch('/api/logs?' + params);
+                const data = await response.json();
+                
+                if (data.logs && Array.isArray(data.logs)) {
+                    // Clear logs and add fresh ones (to avoid duplicates)
+                    logs = [];
+                    data.logs.forEach(logLine => {
+                        if (logLine.trim()) {
+                            addLogEntry(logLine, new Date());
+                        }
+                    });
+                }
+                
+                updateConnectionStatus(true);
+            } catch (error) {
+                console.error('Failed to fetch logs:', error);
+                updateConnectionStatus(false);
+                addLogEntry(`❌ Failed to fetch logs: ${error.message}`, new Date());
+            }
+        }
+        
+        function updateConnectionStatus(connected) {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+            
+            if (connected) {
+                dot.classList.remove('disconnected');
+                text.textContent = 'Connected';
+            } else {
+                dot.classList.add('disconnected');
+                text.textContent = 'Disconnected';
+            }
+        }
+        
+        function updateStats() {
+            document.getElementById('totalEntries').textContent = logs.length;
+            document.getElementById('lastUpdated').textContent = formatTimestamp(new Date());
+        }
+        
+        function refreshLogs() {
+            fetchLogs();
+        }
+        
+        function clearLogs() {
+            logs = [];
+            filteredLogs = [];
+            renderLogs();
+            updateStats();
+        }
+        
+        function toggleAutoRefresh() {
+            autoRefresh = !autoRefresh;
+            const btn = document.getElementById('autoRefreshBtn');
+            const status = document.getElementById('autoRefreshStatus');
+            
+            if (autoRefresh) {
+                btn.textContent = '⏸️ Auto-refresh';
+                status.textContent = 'ON';
+                startAutoRefresh();
+            } else {
+                btn.textContent = '▶️ Auto-refresh';
+                status.textContent = 'OFF';
+                stopAutoRefresh();
+            }
+        }
+        
+        function startAutoRefresh() {
+            if (refreshInterval) clearInterval(refreshInterval);
+            refreshInterval = setInterval(fetchLogs, 3000); // Refresh every 3 seconds
+        }
+        
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+                refreshInterval = null;
+            }
+        }
+        
+        function exportLogs() {
+            const logText = filteredLogs.map(log => 
+                `[${formatTimestamp(log.timestamp)}] ${log.message}`
+            ).join('\n');
+            
+            const blob = new Blob([logText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `hetasinglar-logs-${new Date().toISOString().split('T')[0]}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add initialization log
+            addLogEntry('🚀 Hetasinglar Backend Logs Viewer Initialized', new Date());
+            addLogEntry('🔍 Loading recent logs...', new Date());
+            
+            // Start fetching logs
+            fetchLogs();
+            startAutoRefresh();
+            
+            // Keyboard shortcuts
+            document.addEventListener('keydown', function(e) {
+                if (e.ctrlKey || e.metaKey) {
+                    switch(e.key) {
+                        case 'r':
+                            e.preventDefault();
+                            refreshLogs();
+                            break;
+                        case 'k':
+                            e.preventDefault();
+                            clearLogs();
+                            break;
+                        case 'f':
+                            e.preventDefault();
+                            document.getElementById('filterInput').focus();
+                            break;
+                    }
+                }
+            });
+        });
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {
+            stopAutoRefresh();
+        });
+    </script>
+</body>
+</html>

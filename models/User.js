@@ -129,7 +129,7 @@ const userSchema = new mongoose.Schema({
         messages: {
           enabled: { type: Boolean, default: true },
           // Only send if user has been offline for at least N minutes (0 = always)
-          onlyWhenOfflineMinutes: { type: Number, default: 10, min: 0 },
+          onlyWhenOfflineMinutes: { type: Number, default: 5, min: 0 },
           // Optional per-escort overrides
           perEscort: [{
             escortId: { type: mongoose.Schema.Types.ObjectId, ref: 'EscortProfile' },
