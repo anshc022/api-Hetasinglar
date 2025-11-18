@@ -1295,18 +1295,27 @@ router.post('/:chatId/message', [auth, checkMessageLimit], async (req, res) => {
       responseTime: `${responseTime}ms`
     });
 
-    // 🔄 ALL HEAVY OPERATIONS MOVED TO BACKGROUND for instant messaging
-    setImmediate(async () => {
-      try {
-        if (req.agent && chatId) {
-          await triggerEmailNotification({
-            chatId,
-            messageType: newMessage.messageType,
-            messageText: newMessage.message
-          });
-        }
-
-        // Handle coin deduction in background
+        // 🔄 ALL HEAVY OPERATIONS MOVED TO BACKGROUND for instant messaging
+        setImmediate(async () => {
+          try {
+            if (req.agent && chatId) {
+              console.log('📧 Evaluating email notification for agent message', {
+                chatId,
+                messageType: newMessage.messageType,
+                senderType: 'agent'
+              });
+              await triggerEmailNotification({
+                chatId,
+                messageType: newMessage.messageType,
+                messageText: newMessage.message
+              });
+            } else {
+              console.log('📧 Email notification skipped', {
+                chatId,
+                reason: req.agent ? 'User message (no notification)' : 'No agent context',
+                senderType: req.agent ? 'agent' : 'customer'
+              });
+            }        // Handle coin deduction in background
         if (coinDeduction) {
           await User.findByIdAndUpdate(
             req.user.id,
