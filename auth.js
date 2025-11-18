@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const User = require('./models/User');
 const emailService = require('./services/emailService');
+const { notifyNewCustomerRegistration } = require('./services/discordNotificationService');
 const { formatUserProfile } = require('./utils/userResponseFormatter');
 const { normalizeSwedishRegion } = require('./constants/swedishRegions');
 const { saveBase64Image } = require('./utils/saveBase64Image');
@@ -451,6 +452,11 @@ router.post('/register', async (req, res) => {
 
     // Optionally send a welcome email (non-blocking)
     try { emailService.sendWelcomeEmail(user.email, user.username); } catch {}
+
+    // Fire-and-forget Discord alert about the new customer
+    notifyNewCustomerRegistration(user).catch((error) => {
+      console.warn('Discord new customer notification failed:', error?.message || error);
+    });
 
     // Generate JWT token for immediate login
     const token = jwt.sign(
