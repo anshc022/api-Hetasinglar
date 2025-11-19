@@ -1,9 +1,83 @@
 const express = require('express');
 const { exec } = require('child_process');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
 
-// Get recent backend logs
-router.get('/logs', async (req, res) => {
+// Logs authentication credentials
+const LOGS_PASSWORD = 'Hetasinglar@009';
+const JWT_SECRET = process.env.JWT_SECRET || 'logs-secret-key-hetasinglar-2025';
+
+// Middleware to verify logs authentication
+const verifyLogsAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Access denied. No token provided.' });
+  }
+  
+  const token = authHeader.substring(7);
+  
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (decoded.purpose !== 'logs-access') {
+      return res.status(401).json({ error: 'Invalid token purpose.' });
+    }
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid or expired token.' });
+  }
+};
+
+// Authentication endpoint for logs access
+router.post('/auth-logs', (req, res) => {
+  try {
+    const { password } = req.body;
+    
+    if (!password) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Password required.' 
+      });
+    }
+    
+    if (password !== LOGS_PASSWORD) {
+      // Add small delay to prevent brute force
+      setTimeout(() => {
+        res.status(401).json({ 
+          success: false, 
+          error: 'Invalid password.' 
+        });
+      }, 1000);
+      return;
+    }
+    
+    // Generate JWT token valid for 24 hours
+    const token = jwt.sign(
+      { 
+        purpose: 'logs-access',
+        timestamp: Date.now() 
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    res.json({ 
+      success: true, 
+      token: token,
+      message: 'Authentication successful.' 
+    });
+    
+  } catch (error) {
+    console.error('Logs auth error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Authentication server error.' 
+    });
+  }
+});
+
+// Get recent backend logs (protected)
+router.get('/logs', verifyLogsAuth, async (req, res) => {
   try {
     const lines = req.query.lines || '50';
     const filter = req.query.filter || '';
@@ -50,8 +124,8 @@ router.get('/logs', async (req, res) => {
   }
 });
 
-// Get system status
-router.get('/status', async (req, res) => {
+// Get system status (protected)
+router.get('/status', verifyLogsAuth, async (req, res) => {
   try {
     exec('systemctl is-active hetasinglar-backend', (error, stdout, stderr) => {
       const isActive = stdout.trim() === 'active';

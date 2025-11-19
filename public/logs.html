@@ -12,24 +12,28 @@
         }
         
         body {
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            background: #1a1a1a;
-            color: #e0e0e0;
+            font-family: 'Courier New', monospace;
+            background: #000;
+            color: #00ff00;
             height: 100vh;
             display: flex;
             flex-direction: column;
+            margin: 0;
+            padding: 0;
         }
         
         .header {
-            background: linear-gradient(135deg, #f43f5e, #ec4899);
-            padding: 15px 20px;
-            color: white;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            background: #000;
+            padding: 8px 15px;
+            color: #00ff00;
+            border-bottom: 1px solid #333;
+            font-size: 14px;
         }
         
         .header h1 {
-            font-size: 24px;
-            font-weight: bold;
+            font-size: 14px;
+            font-weight: normal;
+            margin: 0;
         }
         
         .header .info {
@@ -39,68 +43,68 @@
         }
         
         .controls {
-            background: #2d2d2d;
-            padding: 15px 20px;
-            border-bottom: 1px solid #404040;
+            background: #000;
+            padding: 8px 15px;
+            border-bottom: 1px solid #333;
             display: flex;
-            gap: 15px;
+            gap: 10px;
             align-items: center;
             flex-wrap: wrap;
+            font-size: 12px;
         }
         
         .btn {
-            background: #f43f5e;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
+            background: transparent;
+            color: #00ff00;
+            border: 1px solid #333;
+            padding: 4px 8px;
+            border-radius: 0;
             cursor: pointer;
-            font-size: 14px;
-            transition: background 0.2s;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
         }
         
         .btn:hover {
-            background: #e11d48;
+            background: #111;
+            color: #fff;
         }
         
         .btn.secondary {
-            background: #6b7280;
-        }
-        
-        .btn.secondary:hover {
-            background: #4b5563;
+            color: #888;
         }
         
         .filter-input {
-            background: #404040;
-            border: 1px solid #606060;
-            color: #e0e0e0;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 14px;
-            min-width: 200px;
+            background: #000;
+            border: 1px solid #333;
+            color: #00ff00;
+            padding: 4px 8px;
+            border-radius: 0;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+            min-width: 150px;
         }
         
         .filter-input::placeholder {
-            color: #9ca3af;
+            color: #666;
         }
         
         .status {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 5px;
             margin-left: auto;
+            font-size: 11px;
         }
         
         .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #10b981;
+            width: 6px;
+            height: 6px;
+            border-radius: 0;
+            background: #00ff00;
         }
         
         .status-dot.disconnected {
-            background: #ef4444;
+            background: #ff0000;
         }
         
         .logs-container {
@@ -112,71 +116,128 @@
         
         .logs {
             flex: 1;
-            padding: 20px;
+            padding: 10px;
             overflow-y: auto;
-            background: #1a1a1a;
-            font-size: 13px;
-            line-height: 1.4;
+            background: #000;
+            font-size: 11px;
+            line-height: 1.2;
+            font-family: 'Courier New', monospace;
         }
         
         .log-entry {
-            margin-bottom: 4px;
-            padding: 6px 10px;
-            border-radius: 3px;
+            margin: 0;
+            padding: 0;
             white-space: pre-wrap;
             word-break: break-word;
-            font-size: 12px;
+            font-size: 11px;
+            color: #00ff00;
         }
         
         .log-entry.error {
-            background: rgba(239, 68, 68, 0.15);
-            color: #fca5a5;
+            color: #ff0000;
         }
         
         .log-entry.warn {
-            background: rgba(245, 158, 11, 0.15);
-            color: #fbbf24;
+            color: #ffff00;
         }
         
         .log-entry.email {
-            background: rgba(139, 92, 246, 0.15);
-            color: #c4b5fd;
+            color: #00ffff;
         }
         
         .log-entry.success {
-            background: rgba(16, 185, 129, 0.15);
-            color: #6ee7b7;
+            color: #00ff00;
         }
         
         .timestamp {
-            color: #9ca3af;
-            font-size: 11px;
-            margin-right: 10px;
+            color: #666;
+            font-size: 10px;
+            margin-right: 8px;
         }
         
         .loading {
-            text-align: center;
-            color: #9ca3af;
-            padding: 40px;
+            color: #666;
+            padding: 10px;
         }
         
         .no-logs {
-            text-align: center;
-            color: #6b7280;
-            padding: 40px;
+            color: #666;
+            padding: 10px;
         }
         
         .stats {
-            background: #2d2d2d;
-            padding: 10px 20px;
-            border-top: 1px solid #404040;
-            font-size: 12px;
-            color: #9ca3af;
+            background: #000;
+            padding: 5px 15px;
+            border-top: 1px solid #333;
+            font-size: 10px;
+            color: #666;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            font-family: 'Courier New', monospace;
         }
         
+        /* Login Styles */
+        .login-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: #000;
+        }
+        
+        .login-box {
+            background: #000;
+            border: 1px solid #333;
+            padding: 20px;
+            width: 300px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .login-header {
+            color: #00ff00;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+        
+        .password-input {
+            width: 100%;
+            background: #000;
+            border: 1px solid #333;
+            color: #00ff00;
+            padding: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+        
+        .password-input:focus {
+            outline: none;
+            border-color: #00ff00;
+        }
+        
+        .login-btn {
+            background: transparent;
+            color: #00ff00;
+            border: 1px solid #333;
+            padding: 8px 16px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        
+        .login-btn:hover {
+            background: #111;
+            color: #fff;
+        }
+        
+        .login-error {
+            color: #ff0000;
+            font-size: 11px;
+            margin-top: 10px;
+        }
+
         @media (max-width: 768px) {
             .controls {
                 flex-direction: column;
@@ -191,24 +252,43 @@
                 margin-left: 0;
                 justify-content: center;
             }
+            
+            .login-box {
+                width: 90%;
+                margin: 20px;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>Backend Logs</h1>
-    </div>
-    
-    <div class="controls">
-        <button class="btn" onclick="refreshLogs()">🔄 Refresh</button>
-        <button class="btn secondary" onclick="clearLogs()">Clear</button>
-        <button class="btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn">⏸️ Auto</button>
-        <input type="text" class="filter-input" id="filterInput" placeholder="Search logs..." onkeyup="filterLogs()">
-        <div class="status">
-            <div class="status-dot" id="statusDot"></div>
-            <span id="statusText">Live</span>
+    <!-- Login Form -->
+    <div id="loginForm" class="login-container">
+        <div class="login-box">
+            <div class="login-header">root@hetasinglar:~# sudo -u logs</div>
+            <form onsubmit="checkPassword(event)">
+                <input type="password" id="passwordInput" placeholder="Password:" class="password-input" autofocus>
+                <button type="submit" class="login-btn">enter</button>
+            </form>
+            <div id="loginError" class="login-error"></div>
         </div>
     </div>
+
+    <!-- Main App (hidden initially) -->
+    <div id="mainApp" style="display: none; height: 100vh; display: flex; flex-direction: column;">
+        <div class="header">
+            <h1>root@hetasinglar:~# tail -f /var/log/backend.log</h1>
+        </div>
+        
+        <div class="controls">
+            <button class="btn" onclick="refreshLogs()">refresh</button>
+            <button class="btn secondary" onclick="clearLogs()">clear</button>
+            <button class="btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn">pause</button>
+            <input type="text" class="filter-input" id="filterInput" placeholder="grep..." onkeyup="filterLogs()">
+            <div class="status">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">[live]</span>
+            </div>
+        </div>
     
     <div class="logs-container">
         <div class="logs" id="logsContainer">
@@ -216,9 +296,10 @@
         </div>
     </div>
     
-    <div class="stats">
-        <span><span id="totalEntries">0</span> entries</span>
-        <span>Updated: <span id="lastUpdated">Never</span></span>
+        <div class="stats">
+            <span><span id="totalEntries">0</span> entries</span>
+            <span>Updated: <span id="lastUpdated">Never</span></span>
+        </div>
     </div>
 
     <script>
@@ -310,7 +391,21 @@
                     lines: '100',  // Fetch more logs
                 });
                 
-                const response = await fetch('/api/logs?' + params);
+                const token = sessionStorage.getItem('logsAuth');
+                const response = await fetch('/api/logs?' + params, {
+                    headers: {
+                        'Authorization': 'Bearer ' + token
+                    }
+                });
+                
+                if (response.status === 401) {
+                    // Token expired or invalid, redirect to login
+                    sessionStorage.removeItem('logsAuth');
+                    document.getElementById('loginForm').style.display = 'flex';
+                    document.getElementById('mainApp').style.display = 'none';
+                    return;
+                }
+                
                 const data = await response.json();
                 
                 if (data.logs && Array.isArray(data.logs)) {
@@ -337,16 +432,16 @@
             
             if (connected) {
                 dot.classList.remove('disconnected');
-                text.textContent = 'Connected';
+                text.textContent = '[live]';
             } else {
                 dot.classList.add('disconnected');
-                text.textContent = 'Disconnected';
+                text.textContent = '[offline]';
             }
         }
         
         function updateStats() {
             document.getElementById('totalEntries').textContent = logs.length;
-            document.getElementById('lastUpdated').textContent = formatTimestamp(new Date());
+            document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString();
         }
         
         function refreshLogs() {
@@ -363,15 +458,12 @@
         function toggleAutoRefresh() {
             autoRefresh = !autoRefresh;
             const btn = document.getElementById('autoRefreshBtn');
-            const status = document.getElementById('autoRefreshStatus');
             
             if (autoRefresh) {
-                btn.textContent = '⏸️ Auto-refresh';
-                status.textContent = 'ON';
+                btn.textContent = 'pause';
                 startAutoRefresh();
             } else {
-                btn.textContent = '▶️ Auto-refresh';
-                status.textContent = 'OFF';
+                btn.textContent = 'resume';
                 stopAutoRefresh();
             }
         }
@@ -388,59 +480,61 @@
             }
         }
         
-        function exportLogs() {
-            const logText = filteredLogs.map(log => 
-                `[${formatTimestamp(log.timestamp)}] ${log.message}`
-            ).join('\n');
+
+
+        // Server-side authentication
+        async function checkPassword(event) {
+            event.preventDefault();
+            const password = document.getElementById('passwordInput').value;
+            const errorDiv = document.getElementById('loginError');
             
-            const blob = new Blob([logText], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `hetasinglar-logs-${new Date().toISOString().split('T')[0]}.txt`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            try {
+                const response = await fetch('/api/auth-logs', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ password: password })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Store auth token
+                    sessionStorage.setItem('logsAuth', result.token);
+                    document.getElementById('loginForm').style.display = 'none';
+                    document.getElementById('mainApp').style.display = 'flex';
+                    initializeLogs();
+                } else {
+                    errorDiv.textContent = 'Access denied. Invalid password.';
+                    document.getElementById('passwordInput').value = '';
+                    document.getElementById('passwordInput').focus();
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Authentication error. Try again.';
+                console.error('Auth error:', error);
+            }
         }
         
-        function toggleFullscreen() {
-            if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen();
-            } else {
-                document.exitFullscreen();
-            }
+        function initializeLogs() {
+            addLogEntry('# tail -f backend logs started', new Date());
+            fetchLogs();
+            startAutoRefresh();
         }
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            // Add initialization log
-            addLogEntry('🚀 Hetasinglar Backend Logs Viewer Initialized', new Date());
-            addLogEntry('🔍 Loading recent logs...', new Date());
-            
-            // Start fetching logs
-            fetchLogs();
-            startAutoRefresh();
-            
-            // Keyboard shortcuts
-            document.addEventListener('keydown', function(e) {
-                if (e.ctrlKey || e.metaKey) {
-                    switch(e.key) {
-                        case 'r':
-                            e.preventDefault();
-                            refreshLogs();
-                            break;
-                        case 'k':
-                            e.preventDefault();
-                            clearLogs();
-                            break;
-                        case 'f':
-                            e.preventDefault();
-                            document.getElementById('filterInput').focus();
-                            break;
-                    }
-                }
-            });
+            // Check if already authenticated
+            const token = sessionStorage.getItem('logsAuth');
+            if (token) {
+                // Try to access logs directly
+                document.getElementById('loginForm').style.display = 'none';
+                document.getElementById('mainApp').style.display = 'flex';
+                initializeLogs();
+            } else {
+                // Show login form
+                document.getElementById('loginForm').style.display = 'flex';
+            }
         });
         
         // Cleanup on page unload
